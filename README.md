@@ -138,5 +138,49 @@ async function processInventory()
 processInventory();
 ```
 
+## Upload
+```ts
+import { Csv } from "csv-airstream";
+
+const writer = Csv.streamWriter({
+    delimiter: ",",
+    headers: ["id", "title"]
+});
+
+// Active saving on disk
+const savePromise = Csv.saveToFile(writer, testFilePath);
+
+// Write data
+await writer.write({ id: 1, title: "Streaming Architecture" });
+await writer.write({ id: 2, title: 'Using "Quotes" Safely' });
+await writer.close();
+
+// await complete write on disk
+await savePromise;
+```
+
+## Download
+```ts
+import { Csv } from "csv-airstream";
+
+export async function GET()
+{
+    const writer = Csv.streamWriter({
+        delimiter: ";",
+        headers: ["id", "name", "price"],
+    });
+
+    // Write records asynchronously
+    (async () => {
+        await writer.write({ id: 1, name: "Keyboard", price: "49.90" });
+        await writer.write({ id: 2, name: "Mouse", price: "29.90" });
+        await writer.close();
+    })();
+
+    // Returns a Web API Response with Content-Disposition headers
+    return Csv.toResponse(writer, "inventory.csv");
+}
+```
+
 ## License
 MIT
