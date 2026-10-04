@@ -1,6 +1,6 @@
 {
   "name": "@jetonpeche/csv-airstream",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "author": "jetonpeche",
   "description": "Ultra-lightweight, zero-dependency streaming CSV reader & writer based on Web Streams with resilient Result pattern",
