@@ -1,0 +1,45 @@
+{
+  "name": "@jetonpeche/csv-airstream",
+  "version": "1.0.0",
+  "type": "module",
+  "author": "jetonpeche",
+  "description": "Ultra-lightweight, zero-dependency streaming CSV reader & writer based on Web Streams with resilient Result pattern",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "csv",
+    "csv-parser",
+    "csv-writer",
+    "csv-stream",
+    "streaming-csv",
+    "fast-csv",
+    "airstream",
+    "stream",
+    "web-streams",
+    "fsm",
+    "parser"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jetonpecheCorp/csv-airstream.git"
+  },
+  "readme": "https://github.com/jetonpecheCorp/csv-airstream#readme",
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}
