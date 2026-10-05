@@ -41,6 +41,7 @@ class CsvParserEngine<T>
     private readonly ignorerLignesVides: boolean;
     private readonly commentaire?: string;
     private premierCaractereTraite = false;
+    private readonly colonnesRequises?: (string | number)[];
 
     constructor(options: CsvReaderOptions)
     {
@@ -56,6 +57,7 @@ class CsvParserEngine<T>
         this.nombreColonnesStrict = options.strictColumnCount ?? true;
         this.ignorerLignesVides = options.skipEmptyLines ?? false;
         this.commentaire = options.comment;
+        this.colonnesRequises = options.requiredColumns;
 
         this.validerCellule = options.validateCell;
     }
@@ -460,6 +462,40 @@ class CsvParserEngine<T>
                 });
                 this.reinitialiserLigne();
                 return;
+            }
+        }
+
+        // Vérification des colonnes obligatoires (required)
+        if (this.colonnesRequises && this.colonnesRequises.length > 0)
+        {
+            for (let i = 0; i < this.ligneCourante.length; i++)
+            {
+                const valeur = this.ligneCourante[i];
+                const nomColonne = this.enTetes ? this.enTetes[i] : undefined;
+
+                const estRequise = 
+                    this.colonnesRequises.includes(i) || 
+                    (nomColonne !== undefined && this.colonnesRequises.includes(nomColonne));
+
+                // Rejette si la colonne est requise et que sa valeur est vide (après éventuel trim)
+                if (estRequise && valeur.trim().length === 0)
+                {
+                    controller.enqueue({
+                        ok: false,
+                        line: this.numeroLigne,
+                        error: {
+                            code: CsvErrorCode.MISSING_REQUIRED_COLUMN,
+                            line: this.numeroLigne,
+                            columnIndex: i,
+                            columnName: nomColonne,
+                            invalidValue: valeur,
+                            message: `Missing required value for column ${nomColonne ? `"${nomColonne}"` : i} on line ${this.numeroLigne}.`,
+                        },
+                        raw: this.construireLigneBrute(),
+                    });
+                    this.reinitialiserLigne();
+                    return;
+                }
             }
         }
 

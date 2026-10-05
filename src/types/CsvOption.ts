@@ -77,6 +77,12 @@ export interface CsvReaderOptions
      * Character prefix identifying lines that should be ignored as comments (e.g. `'#'`).
      */
     comment?: string;
+
+    /**
+    * List of column names (if `hasHeader: true`) or indices (e.g., [0, 2])
+    * that must not be empty. 
+    */
+    requiredColumns?: (string | number)[];
 }
 
 /**

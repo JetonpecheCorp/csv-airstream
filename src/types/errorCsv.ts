@@ -6,6 +6,7 @@ export const CsvErrorCode = {
   UNEXPECTED_CHAR: "UNEXPECTED_CHAR",
   COLUMN_COUNT_MISMATCH: "COLUMN_COUNT_MISMATCH",
   INVALID_COLUMN_VALUE: "INVALID_COLUMN_VALUE",
+  MISSING_REQUIRED_COLUMN: "MISSING_REQUIRED_COLUMN"
 } as const;
 
 export type CsvErrorCode = typeof CsvErrorCode[keyof typeof CsvErrorCode];
