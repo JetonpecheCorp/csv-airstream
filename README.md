@@ -1,15 +1,17 @@
 # csv-airstream
 
-A lightweight, zero-dependency CSV streaming library built on standard Web Streams. 
+A lightweight, zero-dependency CSV streaming library built on standard Web Streams.
 Designed for high-throughput data processing in Node.js, Deno, Bun, and modern browsers without memory spikes.
 
 ## Features
 
 - **Standard Web Streams**: Native browser and Node.js interoperability without external polyfills.
+- **DTO Decorator Support**: Map complex header labels (e.g. name *, is active (0, 1) *) and column indices to typed class models using `@CsvColumn` and `@CsvIndex`.
+- **Zero Overhead Mapping**: Resolves schema columns once during header initialization for direct O(1) indexed reads and writes.
 - **Delimiter Sniffing**: Automatic delimiter detection (`auto`) evaluated against initial chunks.
 - **Safe Memory Usage**: Parses gigabyte-sized files sequentially without buffering entire datasets.
 - **Result Pattern**: Returns explicit `{ ok: true, data }` or `{ ok: false, error }` objects without breaking parsing streams.
-- **Schema & Cell Validation**: Built-in `requiredColumns` enforcement and per-cell custom validators.
+- **Schema & Cell Validation**: Built-in required column enforcement and per-cell custom validators.
 - **Direct Export Helpers**: Built-in utilities to pipe directly to local files (`saveToFile`) or HTTP download responses (`toResponse`).
 - **RFC 4180 Compliant**: Handles multiline cells, escaped double quotes, and UTF-8 BOM headers automatically.
 
@@ -20,11 +22,71 @@ npm install @jetonpeche/csv-airstream
 ```
 
 ## Quick Start
-### Basic Reading
-Iterate directly through rows using `for await:`
+### 1. Class DTO Mapping
+Bind real-world CSV headers directly to clean TypeScript properties:
 
 ```ts
-import { Csv } from "csv-airstream";
+import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
+
+class UserDto 
+{
+    @CsvColumn("name *", { required: true, order: 0 })
+    name!: string;
+
+    @CsvColumn("is active (0, 1) *", { order: 1 })
+    isActive!: string;
+}
+
+// 1. Streaming Read: auto-maps headers and validates required fields
+const csvData = `name *;is active (0, 1) *
+Jane Doe;1`;
+
+for await (const row of Csv.streamReaderWithClass(csvData, UserDto, { delimiter: "auto" })) 
+{
+    if (row.ok)
+        console.log(row.data.name, row.data.isActive);
+}
+
+// 2. Streaming Write: automatically outputs configured headers in order
+const writer = Csv.streamWriterWithClass(UserDto, { delimiter: ";" });
+
+await writer.write({ name: "Jane Doe", isActive: "1" });
+await writer.close();
+```
+
+### 2. Headerless CSVs with `@CsvIndex`
+Parse files without headers by binding properties directly to zero-based column indices:
+
+```ts
+import { Csv, CsvIndex } from "@jetonpeche/csv-airstream";
+
+class LogEntryDto 
+{
+    @CsvIndex(0, { required: true })
+    timestamp!: string;
+
+    @CsvIndex(1)
+    level!: string;
+
+    @CsvIndex(2)
+    message!: string;
+}
+
+const rawLogs = `2026-10-06T08:00:00Z,INFO,Worker initialized
+2026-10-06T08:00:01Z,WARN,High memory usage detected`;
+
+for await (const row of Csv.streamReaderWithClass(rawLogs, LogEntryDto)) 
+{
+    if (row.ok)
+        console.log(`[${row.data.level}] ${row.data.timestamp}: ${row.data.message}`);
+}
+```
+
+### 3. ow-Level Untyped Streams
+For dynamic files without predefined schemas:
+
+```ts
+import { Csv } from "@jetonpeche/csv-airstream";
 
 const rawCsv = `id,name,price
 1,Keyboard,49.99
@@ -32,167 +94,191 @@ const rawCsv = `id,name,price
 
 for await (const row of Csv.streamReader(rawCsv, { hasHeader: true })) 
 {
-    if (row.ok) 
-    {
+    if (row.ok)
         console.log(`Line ${row.line}: ${row.data.name} ($${row.data.price})`);
-    }
-}
-```
-
-### Basic Writing
-Generate formatted CSV chunks on the fly:
-
-```ts
-import { Csv } from "csv-airstream";
-
-const writer = Csv.streamWriter({
-    delimiter: ",",
-    headers: ["id", "title"]
-});
-
-// Write data
-await writer.write({ id: 1, title: "Streaming Architecture" });
-await writer.write({ id: 2, title: 'Using "Quotes" Safely' });
-await writer.close();
-
-// Read generated CSV chunks
-for await (const chunk of writer.readable) 
-{
-    process.stdout.write(chunk);
 }
 ```
 
 ## Comprehensive Example
-The following example covers binary stream decoding, delimiter auto-detection, UTF-8 BOM handling, comment lines, column count enforcement, custom data validation, and pipe streaming.
+The following scenario processes a messy incoming inventory file:
+- Sniffs separators automatically (delimiter: "auto").   
+- Strips BOM markers and metadata comments.   
+- Remaps complex multi-word CSV labels into typed properties.   
+- Re-orders columns on export and streams the output directly to disk.
 
 ```ts
-import { Csv, type CsvRowResult } from "@jetonpeche/csv-airstream";
+import { Csv, CsvColumn, type CsvRowResult } from "@jetonpeche/csv-airstream";
 
-interface ProductRecord 
-{
-    id: string;
-    sku: string;
-    price: string;
-    stock: string;
+// 1. Declare the DTO with complex column labels and output priorities
+class InventoryItemDto {
+    @CsvColumn("product sku #", { required: true, order: 0 })
+    sku!: string;
+
+    @CsvColumn("product name *", { required: true, order: 1 })
+    name!: string;
+
+    @CsvColumn("unit price (usd)", { required: true, order: 2 })
+    price!: string;
+
+    @CsvColumn("in stock", { order: 3 })
+    stock!: string;
 }
 
-// Sample messy CSV: metadata comments, semicolons, empty lines, and invalid cells
-const rawData = `\uFEFF# Production Inventory Export
-# Generated on 2026-10-04
-id;sku;price;stock
-
-1;TECH-101;299.90;15
-2;"TECH;202";14.50;50
-3;BAD-PRICE;not_a_number;10
-4;;19.99;5
-5;CORRUPT-ROW;19.99
-6;TECH-303;89.00;0
+// Dirty CSV sample: BOM, comments, semicolons, extra spacing, and an invalid row
+const dirtyCsv = `\uFEFF# Inventory Export Batch 42
+# Generated: 2026-10-06
+product name *;product sku #;unit price (usd);in stock
+Mechanical Keyboard;TECH-101;129.99;15
+Wireless Mouse;TECH-202;39.50;50
+;TECH-303;19.99;0
+Monitor 27";DISP-404;249.00;8
 `;
 
-async function processInventory() 
+async function runInventoryPipeline() 
 {
-    // Read using automatic delimiter sniffing and strict schema constraints
-    const reader = Csv.streamReader<ProductRecord>(rawData, {
-        delimiter: "auto",               // Infers ';' automatically from sample lines
-        hasHeader: true,                 // Treats first non-comment line as record keys
-        comment: "#",                    // Skips metadata header comments
-        skipEmptyLines: true,            // Drops whitespace and empty delimiter rows
-        trim: true,                      // Trims outer whitespace from fields
-        strictColumnCount: true,         // Rejects rows with mismatched column count
-        requiredColumns: ["id", "sku"],  // Rejects rows where id or sku are empty
+    // Read and parse into typed InventoryItemDto instances
+    const reader = Csv.streamReaderWithClass(dirtyCsv, InventoryItemDto, {
+        delimiter: "auto",
+        comment: "#",
+        trim: true,
+        strictColumnCount: true,
         validateCell: (value, { columnName }) => 
         {
-            // Custom cell validation
-            if (columnName === "price" && isNaN(Number(value))) 
-            {
-                return "INVALID_NUMERIC_PRICE";
-            }
+            if (columnName === "unit price (usd)" && Number(value) < 0)
+                return "NEGATIVE_PRICE_FORBIDDEN";
+
             return true;
-        }
+        },
     });
 
-    // Prepare a streaming writer to collect clean records
-    const cleanWriter = Csv.streamWriter<ProductRecord>({
-        delimiter: ",",
-        lineTerminator: "\n",
-        headers: ["id", "sku", "price", "stock"]
-    });
+    // Prepare a clean CSV writer exporting to disk
+    const writer = Csv.streamWriterWithClass(InventoryItemDto, { delimiter: "," });
+    const savePromise = Csv.saveToFile(writer, "./clean_inventory.csv");
 
-    // Pipe valid output directly to file on disk
-    const savePromise = Csv.saveToFile(cleanWriter, "./clean_inventory.csv");
+    let successCount = 0;
+    let failureCount = 0;
 
-    // Process rows sequentially
-    for await (const result of reader) 
+    for await (const row of reader) 
     {
-        if (result.ok) 
+        if (row.ok) 
         {
-            await cleanWriter.write(result.data);
+            // Data is strictly typed as InventoryItemDto
+            await writer.write(row.data);
+            successCount++;
         } 
         else 
         {
+            failureCount++;
             console.warn(
-                `[Ignored] Line ${result.line} failed with code "${result.error.code}": ` +
-                `${result.error.message} (value: "${result.error.invalidValue ?? ""}")`
+                `Line ${row.line} skipped [${row.error.code}]: ${row.error.message}`
             );
         }
     }
 
-    await cleanWriter.close();
+    await writer.close();
     await savePromise;
+
+    console.log(`Finished: ${successCount} exported, ${failureCount} rejected.`);
 }
 
-processInventory();
+runInventoryPipeline();
 ```
 
-## Upload
+## File Export & Web Downloads
 ```ts
-import { Csv } from "csv-airstream";
+import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
 
-const writer = Csv.streamWriter({
-    delimiter: ",",
-    headers: ["id", "title"]
-});
+class ExportDto 
+{
+    @CsvColumn("ID", { order: 0 })
+    id!: string;
 
-// Active saving on disk
-const savePromise = Csv.saveToFile(writer, testFilePath);
+    @CsvColumn("Title", { order: 1 })
+    title!: string;
+}
 
-// Write data
-await writer.write({ id: 1, title: "Streaming Architecture" });
-await writer.write({ id: 2, title: 'Using "Quotes" Safely' });
+const writer = Csv.streamWriterWithClass(ExportDto);
+const fileSave = Csv.saveToFile(writer, "./exports/report.csv");
+
+await writer.write({ id: "1", title: "Stream Processing" });
+await writer.write({ id: "2", title: 'Escaped "Quotes"' });
 await writer.close();
 
-// await complete write on disk
-await savePromise;
+await fileSave;
 ```
 
-## Download
+## HTTP File Download
+Return a streaming Web `Response` with configured `Content-Disposition` headers:
+
 ```ts
-import { Csv } from "csv-airstream";
+import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
 
-export async function GET()
+class CustomerDto
 {
-    const writer = Csv.streamWriter({
-        delimiter: ";",
-        headers: ["id", "name", "price"],
-    });
+    @CsvColumn("customer_id")
+    id!: string;
 
-    // Write records asynchronously
+    @CsvColumn("full_name")
+    name!: string;
+}
+
+export async function GET() 
+{
+    const writer = Csv.streamWriterWithClass(CustomerDto);
+
     (async () => {
-        await writer.write({ id: 1, name: "Keyboard", price: "49.90" });
-        await writer.write({ id: 2, name: "Mouse", price: "29.90" });
+        await writer.write({ id: "101", name: "Alice Smith" });
+        await writer.write({ id: "102", name: "Bob Jones" });
         await writer.close();
     })();
 
-    // Returns a Web API Response with Content-Disposition headers
-    return Csv.toResponse(writer, "inventory.csv");
+    // Returns a native Web API Response with Content-Disposition headers
+    return Csv.toResponse(writer, "customers.csv");
 }
 ```
 
 ## API Reference
 
-### `Csv.streamReader(source, options?)`
+### Decorators
+`@CsvColumn(header, options?)`
+Maps a class property to an explicit CSV header string.
 
-Reads CSV data from a string or stream and yields row results sequentially.
+| Parameter |Type | Description |
+|:--- |:--- |:--- |
+| `header` | `string` | Header text in the CSV source file. |
+| `options.required` | `boolean` | Rejects row if the field resolves to an empty string. |
+| `options.order` | `number` | Output column order priority when serializing (e.g. 0, 1, 2). |
+
+`@CsvIndex(index, options?)`
+Maps a class property directly to a zero-based column position.
+
+| Parameter |Type | Description |
+|:--- |:--- |:--- |
+| `index` | `number` | Zero-based column index in the line. |
+| `options.required` | `boolean` | Rejects row if the field resolves to an empty string. |
+
+### Class DTO Methods
+`Csv.streamReaderWithClass(source, dtoClass, options?)`  
+Streams and parses a CSV source directly into typed instances of a decorated DTO class.   
+
+- Automatically enables `hasHeader: true` if `@CsvColumn` decorators exist.   
+- Auto-registers `requiredColumns` defined in metadata.   
+- Resolves column index lookups once during stream start for O(1) row parsing. 
+
+`Csv.streamWriterWithClass(dtoClass, options?)`  
+Creates a streaming CSV writer configured from a decorated DTO class.
+
+| Parameter |Type | Default | Description |
+|:--- |:--- |:--- |:--- |
+| `columnsOrder` | `(keyof T)[]` | `undefined` | Overrides the DTO's default export column order at runtime. |
+| `delimiter` | `string` | `","` | Separator character placed between values. |
+| `lineTerminator` | `"\r\n" \| "\n"` | "\r\n" | Line ending appended after each record.  |
+| `quoteChar` `| `string` | `"` | Quote character wrapping fields with special characters. |
+| `alwaysQuote` | `boolean` | `false` | Enforces quotes around every cell. |
+
+### Low-Level Stream Methods
+`Csv.streamReader(source, options?)`  
+Reads raw CSV data and yields `CsvRowResult<T>` records.
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -209,11 +295,8 @@ Reads CSV data from a string or stream and yields row results sequentially.
 | `quoteChar` | `string` | `'"'` | Quote character used for escaping special characters. |
 | `escapeChar` | `string` | `'"'` | Escape character used inside quoted values. |
 
-**Returns:** `AsyncIterable<CsvRowResult<T>>` emitting either `{ ok: true, data }` or `{ ok: false, error }`.
-
-### `Csv.streamWriter(options?)`
-
-Creates a streaming CSV writer handle.
+`Csv.streamWriter(options?)`  
+Creates a low-level untyped streaming writer handle.   
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |

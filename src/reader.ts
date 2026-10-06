@@ -1,4 +1,4 @@
-import { CellValidator, CsvReaderOptions } from "./types/CsvOption.js";
+import { CellValidatorFn, CsvReaderOptions } from "./types/CsvOption.js";
 import { CsvRowResult } from "./types/CsvRowResult.js";
 import { CsvErrorCode, CsvErrorDetail } from "./types/errorCsv.js";
 
@@ -23,7 +23,8 @@ class CsvParserEngine<T>
     private readonly aEnTete: boolean;
     private readonly rogner: boolean;
     private readonly nombreColonnesStrict: boolean;
-    private readonly validerCellule?: CellValidator;
+    private readonly validerCellule?: CellValidatorFn;
+    private readonly headerMapping?: Map<string, string>;
 
     private enReniflage: boolean;
     private tamponReniflage = "";
@@ -35,6 +36,7 @@ class CsvParserEngine<T>
     private numeroLigne = 1;
     private nombreColonnesAttendu: number | null = null;
     private enTetes: string[] | null = null;
+    private clesCiblesPrecalculees: string[] | null = null;
     private erreurLigne: CsvErrorDetail | null = null;
     private dernierCaractere = "";
 
@@ -42,6 +44,7 @@ class CsvParserEngine<T>
     private readonly commentaire?: string;
     private premierCaractereTraite = false;
     private readonly colonnesRequises?: (string | number)[];
+    private readonly indexMapping?: Map<number, string>;
 
     constructor(options: CsvReaderOptions)
     {
@@ -58,7 +61,8 @@ class CsvParserEngine<T>
         this.ignorerLignesVides = options.skipEmptyLines ?? false;
         this.commentaire = options.comment;
         this.colonnesRequises = options.requiredColumns;
-
+        this.headerMapping = options.headerMapping;
+        this.indexMapping = options.indexMapping;
         this.validerCellule = options.validateCell;
     }
 
@@ -434,10 +438,21 @@ class CsvParserEngine<T>
             return;
         }
 
+        // 1. Initialisation de l'en-tête : mapping calculé une seule fois
         if (this.aEnTete && this.enTetes === null)
         {
             this.enTetes = [...this.ligneCourante];
             this.nombreColonnesAttendu = this.enTetes.length;
+
+            this.clesCiblesPrecalculees = new Array(this.enTetes.length);
+            for (let i = 0; i < this.enTetes.length; i++)
+            {
+                // Priorité : 1. Mapping par header, 2. Mapping par index, 3. Header brut
+                const parHeader = this.headerMapping?.get(this.enTetes[i]);
+                const parIndex = this.indexMapping?.get(i);
+                this.clesCiblesPrecalculees[i] = parHeader ?? parIndex ?? this.enTetes[i];
+            }
+
             this.reinitialiserLigne();
             return;
         }
@@ -465,7 +480,7 @@ class CsvParserEngine<T>
             }
         }
 
-        // Vérification des colonnes obligatoires (required)
+        // Vérification des colonnes obligatoires
         if (this.colonnesRequises && this.colonnesRequises.length > 0)
         {
             for (let i = 0; i < this.ligneCourante.length; i++)
@@ -477,7 +492,6 @@ class CsvParserEngine<T>
                     this.colonnesRequises.includes(i) || 
                     (nomColonne !== undefined && this.colonnesRequises.includes(nomColonne));
 
-                // Rejette si la colonne est requise et que sa valeur est vide (après éventuel trim)
                 if (estRequise && valeur.trim().length === 0)
                 {
                     controller.enqueue({
@@ -533,12 +547,13 @@ class CsvParserEngine<T>
             }
         }
 
-        if (this.aEnTete && this.enTetes)
+        // 2. Émission de l'objet en O(1) via le tableau plat
+        if (this.aEnTete && this.clesCiblesPrecalculees)
         {
             const objet: Record<string, string> = {};
-            for (let i = 0; i < this.enTetes.length; i++)
+            for (let i = 0; i < this.clesCiblesPrecalculees.length; i++)
             {
-                objet[this.enTetes[i]] = this.ligneCourante[i] ?? "";
+                objet[this.clesCiblesPrecalculees[i]] = this.ligneCourante[i] ?? "";
             }
             controller.enqueue({
                 ok: true,
@@ -546,6 +561,20 @@ class CsvParserEngine<T>
                 data: objet as unknown as T,
             });
         } 
+        else if (this.indexMapping && this.indexMapping.size > 0)
+        {
+            // Mode sans header : construction directe de l'objet DTO typé via index
+            const objet: Record<string, string> = {};
+            for (const [colIndex, propKey] of this.indexMapping.entries())
+            {
+                objet[propKey] = this.ligneCourante[colIndex] ?? "";
+            }
+            controller.enqueue({
+                ok: true,
+                line: this.numeroLigne,
+                data: objet as unknown as T,
+            });
+        }
         else
         {
             controller.enqueue({

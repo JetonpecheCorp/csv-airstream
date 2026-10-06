@@ -1,6 +1,6 @@
 import { CsvWriterOptions } from "./types/CsvOption.js";
 
-type EntreeLigne = unknown[] | Record<string, unknown>;
+export type RowInput = unknown[] | object;
 
 class CsvWriterEngine
 {
@@ -9,6 +9,7 @@ class CsvWriterEngine
     private readonly finDeLigne: string;
     private readonly guillemetsSystematiques: boolean;
     private readonly enTetes?: string[];
+    private readonly clesProprietes?: string[];
     private readonly regexGuillemetsRequis: RegExp;
     private enTeteEcrite = false;
 
@@ -19,6 +20,7 @@ class CsvWriterEngine
         this.finDeLigne = options.lineTerminator ?? "\r\n";
         this.guillemetsSystematiques = options.alwaysQuote ?? false;
         this.enTetes = options.headers;
+        this.clesProprietes = options.propertyKeys;
 
         const separateurEchappe = this.echapperRegex(this.separateur);
         const guillemetEchappe = this.echapperRegex(this.caractereGuillemet);
@@ -26,7 +28,7 @@ class CsvWriterEngine
     }
 
     public writeRow(
-        ligne: EntreeLigne,
+        ligne: RowInput,
         controller: TransformStreamDefaultController<string>
     ): void
     {
@@ -47,11 +49,23 @@ class CsvWriterEngine
         }
         else if (typeof ligne === "object" && ligne !== null)
         {
-            const cles = this.enTetes ?? Object.keys(ligne);
-            for (let i = 0; i < cles.length; i++)
+            const enregistrement = ligne as Record<string, unknown>;
+
+            // Chemin O(1) si les propriétés sont pré-calculées par le décorateur
+            if (this.clesProprietes)
             {
-                const valeur = (ligne as Record<string, unknown>)[cles[i]];
-                cellules.push(this.formaterCellule(valeur));
+                for (let i = 0; i < this.clesProprietes.length; i++)
+                {
+                    cellules.push(this.formaterCellule(enregistrement[this.clesProprietes[i]]));
+                }
+            }
+            else
+            {
+                const cles = this.enTetes ?? Object.keys(enregistrement);
+                for (let i = 0; i < cles.length; i++)
+                {
+                    cellules.push(this.formaterCellule(enregistrement[cles[i]]));
+                }
             }
         }
 
@@ -59,7 +73,7 @@ class CsvWriterEngine
     }
 
     private ecrireEnTetesSiBesoin(
-        premiereLigne: EntreeLigne,
+        premiereLigne: RowInput,
         controller: TransformStreamDefaultController<string>
     ): void
     {
@@ -102,7 +116,7 @@ class CsvWriterEngine
     }
 }
 
-export class CsvWriterStream<T extends EntreeLigne = EntreeLigne> extends TransformStream<T, string>
+export class CsvWriterStream<T extends RowInput = RowInput> extends TransformStream<T, string>
 {
     constructor(options: CsvWriterOptions = {})
     {
