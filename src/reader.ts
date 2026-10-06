@@ -109,13 +109,16 @@ class CsvParserEngine<T>
     {
         if (chunk.length === 0) return;
 
+        // Élimine le BOM de début de fichier ET les BOM internes générés par concaténation
+        const chunkNettoye = chunk.replace(/\uFEFF/g, "");
+
         if (this.enReniflage)
         {
-            this.reniflerMorceau(chunk, controller);
+            this.reniflerMorceau(chunkNettoye, controller);
             return;
         }
 
-        this.consommerMorceau(chunk, controller);
+        this.consommerMorceau(chunkNettoye, controller);
     }
 
     public finish(
@@ -161,15 +164,6 @@ class CsvParserEngine<T>
         controller: TransformStreamDefaultController<CsvRowResult<T>>
     ): void
     {
-        if (!this.premierCaractereTraite && morceau.length > 0)
-        {
-            this.premierCaractereTraite = true;
-            if (morceau.charCodeAt(0) === 0xFEFF)
-            {
-                morceau = morceau.slice(1);
-            }
-        }
-
         let indexArret = -1;
 
         for (let i = 0; i < morceau.length; i++)
@@ -283,16 +277,6 @@ class CsvParserEngine<T>
     ): void
     {
         let debut = 0;
-
-        // Gestion du BOM (Byte Order Mark) initial
-        if (!this.premierCaractereTraite && morceau.length > 0)
-        {
-            this.premierCaractereTraite = true;
-            if (morceau.charCodeAt(0) === 0xFEFF)
-            {
-                debut = 1;
-            }
-        }
 
         let indexDebutTexte = debut;
 

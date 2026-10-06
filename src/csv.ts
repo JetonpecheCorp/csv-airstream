@@ -294,6 +294,13 @@ export class Csv
         const nodeReadable = Readable.fromWeb(byteStream as any);
         const fileDestination = createWriteStream(filePath);
 
-        await pipeline(nodeReadable, fileDestination);
+        try
+        {
+            await pipeline(nodeReadable, fileDestination);
+        } 
+        catch (error)
+        {
+            throw new Error(`CSV File Write Error at '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 }

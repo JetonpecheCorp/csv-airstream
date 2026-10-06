@@ -18,7 +18,8 @@ class CsvWriterEngine
     private premierMorceauEmis = false;
 
     private tampon: string[] = [];
-    private readonly tailleMaxTampon = 500;
+    private tailleTamponCourante = 0;
+    private readonly tailleMaxTamponCaracteres = 65536;
 
     constructor(options: CsvWriterOptions)
     {
@@ -39,7 +40,7 @@ class CsvWriterEngine
         this.guillemetDouble = `${this.caractereGuillemet}${this.caractereGuillemet}`;
     }
 
-    public writeRow(
+public writeRow(
         ligne: RowInput,
         controller: TransformStreamDefaultController<string>
     ): void
@@ -88,11 +89,15 @@ class CsvWriterEngine
         const debutLigne = (!this.premierMorceauEmis && this.writeBom) ? "\uFEFF" : "";
         this.premierMorceauEmis = true;
         
-        sortieChunk += debutLigne + cellules.join(this.separateur) + this.finDeLigne;
+        const ligneComplete = debutLigne + cellules.join(this.separateur) + this.finDeLigne;
+        
+        // Ajout dans le tampon
+        sortieChunk += ligneComplete;
         this.tampon.push(sortieChunk);
+        this.tailleTamponCourante += sortieChunk.length;
 
-        // Vidage conditionnel du tampon
-        if (this.tampon.length >= this.tailleMaxTampon)
+        // Vidage conditionnel basé sur la taille en mémoire
+        if (this.tailleTamponCourante >= this.tailleMaxTamponCaracteres)
         {
             this.flush(controller);
         }
@@ -104,6 +109,7 @@ class CsvWriterEngine
         {
             controller.enqueue(this.tampon.join(""));
             this.tampon = [];
+            this.tailleTamponCourante = 0;
         }
     }
 
