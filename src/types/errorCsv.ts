@@ -2,14 +2,15 @@
  * Standardized error codes emitted during CSV parsing or cell validation.
  */
 export const CsvErrorCode = {
-  UNCLOSED_QUOTE: "UNCLOSED_QUOTE",
-  UNEXPECTED_CHAR: "UNEXPECTED_CHAR",
-  COLUMN_COUNT_MISMATCH: "COLUMN_COUNT_MISMATCH",
-  INVALID_COLUMN_VALUE: "INVALID_COLUMN_VALUE",
-  MISSING_REQUIRED_COLUMN: "MISSING_REQUIRED_COLUMN"
+    UNCLOSED_QUOTE: "UNCLOSED_QUOTE",
+    UNEXPECTED_CHAR: "UNEXPECTED_CHAR",
+    COLUMN_COUNT_MISMATCH: "COLUMN_COUNT_MISMATCH",
+    INVALID_COLUMN_VALUE: "INVALID_COLUMN_VALUE",
+    MISSING_REQUIRED_COLUMN: "MISSING_REQUIRED_COLUMN",
+    MISSING_HEADER_COLUMN: "MISSING_HEADER_COLUMN",
 } as const;
 
-export type CsvErrorCode = typeof CsvErrorCode[keyof typeof CsvErrorCode];
+export type CsvErrorCode = (typeof CsvErrorCode)[keyof typeof CsvErrorCode];
 
 /**
  * Structured details regarding an anomaly detected on a specific row or cell.

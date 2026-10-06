@@ -1,3 +1,25 @@
+((Symbol as any).metadata ??= Symbol.for("Symbol.metadata"));
+
+/**
+ * Supported primitives for automated string-to-value casting.
+ */
+export type ColumnType = "string" | "number" | "boolean" | "date";
+
+/**
+ * Custom transformation function converting a raw string cell into a typed domain value.
+ *
+ * @template T Return type of the parsed value.
+ */
+export type TransformFn<T = any> = (value: string) => T;
+
+export interface NumberCastOptions 
+{
+    /** Séparateur décimal accepté (défaut : '.') */
+    decimalSeparator?: "." | ",";
+
+    strict?: boolean;
+}
+
 /**
  * Configuration metadata associated with a decorated CSV column property.
  */
@@ -13,6 +35,10 @@ export interface ColumnMeta
     propertyKey: string;
     /** Whether an empty string value triggers a validation error. */
     required?: boolean;
+
+    type?: ColumnType;
+
+    transform?: TransformFn;
 }
 
 /**
@@ -52,6 +78,39 @@ export interface CsvColumnOptions
      * ```
      */
     order?: number;
+
+    /**
+     * Target primitive type for automated value conversion (`"number"`, `"boolean"`, `"date"`).
+     * Shortcut for common built-in transformers without writing custom parsing logic.
+     */
+    type?: ColumnType;
+
+    /**
+     * Static, model-level value converter applied whenever a cell for this property is parsed.
+     *
+     * - **Scope**: Bound directly to the DTO class definition. Applies to all parsing pipelines 
+     *   using this model across the entire application.
+     * - **Precedence**: Overridden at runtime if a transformer for the same property key 
+     *   is explicitly passed via `options.transformers` in `Csv.streamReaderWithClass()`.
+     *
+     * @example
+     * ```ts
+     * class ProductDto 
+     * {
+     *   // Splits pipe-separated values into a typed array directly on the model
+     *   @CsvColumn("tags", { transform: (raw) => raw.split("|").map(t => t.trim()) })
+     *   tags!: string[];
+     * }
+     * ```
+     */
+    transform?: TransformFn;
+
+    /** 
+     * Custom truthy / falsy definitions when `type: "boolean"` is used. 
+     */
+    booleanValues?: BooleanCastOptions;
+
+    numberOptions?: NumberCastOptions;
 }
 
 /**
@@ -69,8 +128,41 @@ export interface CsvClassSchema<T>
     headerToProperty: Map<string, string>;
     /** Map linking a 0-based column index to its class property key. */
     indexToProperty: Map<number, string>;
-    /** List of headers or numeric indices marked with `{ required: true }`. */
+
+    /** 
+     * List of headers or numeric indices marked with `{ required: true }`. 
+     */
     requiredColumns: (string | number)[];
+
+    /**
+     * Pre-compiled map associating class property keys with their static transformation functions.
+     *
+     * Generated from `@CsvColumn` or `@CsvIndex` decorators configured with `{ type: ... }` 
+     * or `{ transform: ... }`. 
+     * 
+     * During stream initialization in `Csv.streamReaderWithClass()`, this map is flattened into 
+     * an indexed array aligned with the incoming CSV column positions, guaranteeing direct 
+     * O(1) casting per row without runtime key lookups.
+     */
+    propertyTransformers: Map<string, TransformFn>;
+}
+
+/**
+ * Configuration options for boolean value casting.
+ */
+export interface BooleanCastOptions 
+{
+    /** 
+     * String tokens considered as `true` (case-insensitive).
+     * @default ["1", "true", "yes", "y", "oui", "o"]
+     */
+    truthy?: readonly string[];
+
+    /** 
+     * Optional string tokens considered as `false` (case-insensitive).
+     * If provided, values not matching either list can return null or false.
+     */
+    falsy?: readonly string[];
 }
 
 /**
@@ -78,8 +170,68 @@ export interface CsvClassSchema<T>
  */
 export type ClassConstructor<T> = new (...args: any[]) => T;
 
-const CSV_SCHEMA_KEY = Symbol("__csv_schema__");
+export const CSV_SCHEMA_KEY = Symbol.for("__csv_schema__");
 const CSV_CACHE = new WeakMap<Function, CsvClassSchema<any>>();
+const DEFAULT_TRUTHY = ["1", "true", "yes", "y", "oui", "o"] as const;
+
+function resolveTransformer(
+    type?: ColumnType,
+    custom?: TransformFn,
+    boolOptions?: BooleanCastOptions,
+    numOptions?: NumberCastOptions
+): TransformFn | undefined 
+{
+    if (custom) return custom;
+
+    switch (type) 
+    {
+        case "boolean":
+            {
+                const truthyList = (boolOptions?.truthy ?? DEFAULT_TRUTHY).map(v => v.trim().toLowerCase());
+                const truthySet = new Set(truthyList);
+
+                if (boolOptions?.falsy && boolOptions.falsy.length > 0) 
+                {
+                    const falsySet = new Set(boolOptions.falsy.map(v => v.trim().toLowerCase()));
+                    return (v: string) => 
+                    {
+                        const s = v.trim().toLowerCase();
+                        if (truthySet.has(s)) return true;
+                        if (falsySet.has(s)) return false;
+                        return null;
+                    };
+                }
+
+                return (v: string) => truthySet.has(v.trim().toLowerCase());
+            }
+
+        case "number":
+            return (v: string) => 
+            {
+                let trimmed = v.trim();
+                if (trimmed === "") return null;
+
+                if (numOptions?.decimalSeparator === ",") 
+                {
+                    trimmed = trimmed.replace(",", ".");
+                }
+
+                const num = Number(trimmed);
+                if (isNaN(num))
+                {
+                    if (numOptions?.strict) throw new Error(`Invalid number format: "${v}"`);
+                    return null;
+                }
+                return num;
+            };
+
+        case "date":
+            return (v: string) => (v.trim() === "" ? null : new Date(v));
+
+        default:
+            return undefined;
+    }
+}
 
 /**
  * Binds a class property to an explicit CSV header string with optional writing order.
@@ -107,6 +259,8 @@ export function CsvColumn(header: string, options?: CsvColumnOptions): any
         header,
         required: options?.required,
         order: options?.order,
+        type: options?.type,
+        transform: resolveTransformer(options?.type, options?.transform, options?.booleanValues, options?.numberOptions),
     });
 }
 
@@ -129,56 +283,82 @@ export function CsvColumn(header: string, options?: CsvColumnOptions): any
  * @param options Additional settings such as `required`.
  * @returns A property decorator handler.
  */
-export function CsvIndex(index: number, options?: { required?: boolean }): any 
+export function CsvIndex(
+    index: number,
+    options?: { required?: boolean; type?: ColumnType; booleanValues?: BooleanCastOptions; numberOptions?: NumberCastOptions; transform?: TransformFn }
+): any 
 {
     return registerDecorator({
         index,
         order: index,
         required: options?.required,
+        type: options?.type,
+        transform: resolveTransformer(options?.type, options?.transform, options?.booleanValues, options?.numberOptions),
     });
 }
 
-function registerDecorator(meta: { header?: string; index?: number; order?: number; required?: boolean }): any 
+function registerDecorator(meta: {
+    header?: string;
+    index?: number;
+    order?: number;
+    type?: ColumnType;
+    required?: boolean;
+    transform?: TransformFn;
+}): any
 {
-    return (targetOrContext: any, propertyKey?: string | symbol) => 
+    return (targetOrContext: any, contextOrKey?: string | symbol | ClassFieldDecoratorContext) =>
     {
-        // TC39 Stage 3 (TypeScript 5+)
-        if (typeof targetOrContext === "undefined" || (propertyKey && typeof propertyKey === "object")) 
+        // Détection propre des décorateurs TC39
+        if (contextOrKey && typeof contextOrKey === "object" && "kind" in contextOrKey)
         {
-            const context = propertyKey as unknown as ClassFieldDecoratorContext;
+            const context = contextOrKey as ClassFieldDecoratorContext;
             const propName = String(context.name);
-            context.addInitializer(function (this: any) 
-            {
-                enregistrerMeta(this.constructor, propName, meta.header, meta.index, meta.order, meta.required);
-            });
 
-            return function (this: any, initialValue: any) 
+            if (context.metadata)
             {
-                enregistrerMeta(this.constructor, propName, meta.header, meta.index, meta.order, meta.required);
-                return initialValue;
-            };
+                if (!context.metadata[CSV_SCHEMA_KEY])
+                {
+                    context.metadata[CSV_SCHEMA_KEY] = [];
+                }
+                (context.metadata[CSV_SCHEMA_KEY] as any[]).push({ ...meta, propertyKey: propName });
+            }
+            else
+            {
+                // Fallback de sécurité si le polyfill Symbol.metadata est absent ou incomplet
+                context.addInitializer(function (this: any) 
+                {
+                    if (!this.constructor[CSV_SCHEMA_KEY])
+                    {
+                        this.constructor[CSV_SCHEMA_KEY] = [];
+                    }
+
+                    // Empêcher les doublons si la classe est instanciée plusieurs fois
+                    const existant = this.constructor[CSV_SCHEMA_KEY].find((m: any) => m.propertyKey === propName);
+                    if (!existant)
+                    {
+                        this.constructor[CSV_SCHEMA_KEY].push({ ...meta, propertyKey: propName });
+                    }
+                });
+            }
+            return;
         }
 
-        // TypeScript Legacy (experimentalDecorators: true)
-        enregistrerMeta(targetOrContext.constructor, String(propertyKey), meta.header, meta.index, meta.order, meta.required);
+        // Décorateurs expérimentaux (Legacy TypeScript)
+        enregistrerMeta(targetOrContext.constructor, String(contextOrKey), meta);
     };
 }
 
 function enregistrerMeta(
     ctor: any,
     propertyKey: string,
-    header?: string,
-    index?: number,
-    order?: number,
-    required?: boolean
-): void 
+    meta: { header?: string; index?: number; order?: number; required?: boolean; transform?: TransformFn }
+): void
 {
-    if (!ctor[CSV_SCHEMA_KEY]) 
+    if (!ctor[CSV_SCHEMA_KEY])
     {
         ctor[CSV_SCHEMA_KEY] = [];
     }
-    const colonnes: ColumnMeta[] = ctor[CSV_SCHEMA_KEY];
-    colonnes.push({ header, index, order, propertyKey, required });
+    ctor[CSV_SCHEMA_KEY].push({ ...meta, propertyKey });
 }
 
 /**
@@ -189,16 +369,20 @@ function enregistrerMeta(
  * @param cls The class constructor containing decorator metadata.
  * @returns Compiled schema object, or `null` if no decorators are defined.
  */
-export function getCsvSchema<T>(cls: ClassConstructor<T>): CsvClassSchema<T> | null 
+export function getCsvSchema<T>(cls: ClassConstructor<T>): CsvClassSchema<T> | null
 {
     const cached = CSV_CACHE.get(cls);
-    if (cached) return cached;
+    if (cached)
+        return cached;
 
-    const metas: ColumnMeta[] | undefined = (cls as any)[CSV_SCHEMA_KEY];
-    if (!metas || metas.length === 0) return null;
+    const tc39Meta = (cls as any)[Symbol.metadata]?.[CSV_SCHEMA_KEY];
+    const legacyMeta = (cls as any)[CSV_SCHEMA_KEY];
+    const metas = tc39Meta ?? legacyMeta;
 
-    // Stable sort according to explicit order or numeric column index
-    const sortedMetas = [...metas].sort((a, b) => 
+    if (!metas || metas.length === 0)
+        return null;
+
+    const sortedMetas = [...metas].sort((a, b) =>
     {
         const orderA = a.order ?? (a.index !== undefined ? a.index : 9999);
         const orderB = b.order ?? (b.index !== undefined ? b.index : 9999);
@@ -209,31 +393,31 @@ export function getCsvSchema<T>(cls: ClassConstructor<T>): CsvClassSchema<T> | n
     const propertyKeys: (keyof T)[] = [];
     const headerToProperty = new Map<string, string>();
     const indexToProperty = new Map<number, string>();
+    const propertyTransformers = new Map<string, TransformFn>();
     const requiredColumns: (string | number)[] = [];
 
-    for (let i = 0; i < sortedMetas.length; i++) 
+    for (let i = 0; i < sortedMetas.length; i++)
     {
-        const meta = sortedMetas[i];
-        const propKey = meta.propertyKey as keyof T;
+        const m = sortedMetas[i];
+        const propKey = m.propertyKey as keyof T;
 
-        if (meta.header !== undefined) 
+        if (m.transform)
         {
-            headers.push(meta.header);
-            propertyKeys.push(propKey);
-            headerToProperty.set(meta.header, meta.propertyKey);
-            if (meta.required) 
-            {
-                requiredColumns.push(meta.header);
-            }
+            propertyTransformers.set(m.propertyKey, m.transform);
         }
 
-        if (meta.index !== undefined) 
+        if (m.header !== undefined)
         {
-            indexToProperty.set(meta.index, meta.propertyKey);
-            if (meta.required) 
-            {
-                requiredColumns.push(meta.index);
-            }
+            headers.push(m.header);
+            propertyKeys.push(propKey);
+            headerToProperty.set(m.header, m.propertyKey);
+            if (m.required) requiredColumns.push(m.header);
+        }
+
+        if (m.index !== undefined)
+        {
+            indexToProperty.set(m.index, m.propertyKey);
+            if (m.required) requiredColumns.push(m.index);
         }
     }
 
@@ -242,6 +426,7 @@ export function getCsvSchema<T>(cls: ClassConstructor<T>): CsvClassSchema<T> | n
         propertyKeys,
         headerToProperty,
         indexToProperty,
+        propertyTransformers,
         requiredColumns,
     };
 

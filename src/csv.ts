@@ -1,55 +1,94 @@
 import { CsvReaderStream } from "./reader.js";
 import { CsvWriterStream, type RowInput } from "./writer.js";
-import { ClassConstructor, getCsvSchema } from "./decorator.js";
 import type { CsvReaderOptions, CsvWriterOptions } from "./types/CsvOption.js";
 import type { CsvRowResult } from "./types/CsvRowResult.js";
+import { ClassConstructor, getCsvSchema, CSV_SCHEMA_KEY } from "./decorator.js";
 
 /**
  * Main entry point for stream-based CSV parsing and serialization.
  */
 export class Csv
 {
-/**
-     * Streams and parses a CSV source directly into instances of a decorated DTO class.
+    /**
+     * Streams and parses a CSV source directly into typed instances of a decorated DTO class.
      * 
-     * Automatically activates `hasHeader: true` if `@CsvColumn` decorators are detected, 
-     * resolves column ordering in O(1), and enforces mandatory columns defined by `{ required: true }`.
+     * Features:
+     * - Automatic header activation (`hasHeader: true`) if `@CsvColumn` is detected.
+     * - Immediate rejection (`MISSING_HEADER_COLUMN`) if mandatory columns are missing from the header row.
+     * - Zero-overhead O(1) indexed lookups with automatic primitive type conversion.
+     * - Merges static `{ required: true }` decorators with runtime `options.requiredColumns` without overrides.
      *
      * @example
      * ```ts
-     * // No need to specify requiredColumns: UserDto's @CsvColumn({ required: true }) is auto-enforced
-     * for await (const row of Csv.read(csvStream, UserDto)) 
-     * {
-     *   if (row.ok) console.log(row.data.name);
+     * for await (const row of Csv.streamReaderWithClass(csvStream, UserDto)) {
+     *   if (row.ok) {
+     *     console.log(row.data.name, row.data.price);
+     *   }
      * }
      * ```
      *
      * @template T The decorated target DTO class.
-     * @param source Raw CSV text or readable byte/string stream.
+     * @param source Raw CSV string, text stream, or binary byte stream (`Uint8Array`).
      * @param dtoClass Class constructor decorated with `@CsvColumn` or `@CsvIndex`.
-     * @param options Additional reader options. Extra columns provided in `options.requiredColumns` 
-     *                will be merged with the DTO's static required fields.
+     * @param options Additional parser configuration.
      * @returns An async iterable yielding parsed `CsvRowResult<T>` records.
      */
     public static streamReaderWithClass<T extends object>(
         source: string | ReadableStream<string> | ReadableStream<Uint8Array>,
         dtoClass: ClassConstructor<T>,
-        options: CsvReaderOptions = {}
+        options: CsvReaderOptions<T> = {}
     ): AsyncIterable<CsvRowResult<T>>
     {
         const schema = getCsvSchema(dtoClass);
         const hasHeaderDefault = schema ? schema.headers.length > 0 : false;
 
-        const staticRequired = schema?.requiredColumns ?? [];
-        const runtimeRequired = options.requiredColumns ?? [];
-        const requiredColumns = Array.from(new Set([...staticRequired, ...runtimeRequired]));
+        const staticReq = schema?.requiredColumns ?? [];
+        const runtimeReq = options.requiredColumns ?? [];
+        const mergedRequired = Array.from(new Set([...staticReq, ...runtimeReq]));
+
+        // Cloner la map des transformateurs pour ne pas muter le cache de schéma
+        const transformers = new Map(schema?.propertyTransformers ?? []);
+
+        // 1. Surcharge globale des booléens si booleanTruthyValues est passé dans les options
+        if (options.booleanTruthyValues && options.booleanTruthyValues.length > 0)
+        {
+            const truthySet = new Set(options.booleanTruthyValues.map((v) => v.trim().toLowerCase()));
+            const boolCaster = (v: string) => truthySet.has(v.trim().toLowerCase());
+
+            // Recherche des propriétés déclarées en boolean
+            const symbolMetaKey = (Symbol as any).metadata;
+            const metas = (symbolMetaKey ? (dtoClass as any)[symbolMetaKey]?.[CSV_SCHEMA_KEY] : undefined)
+                ?? (dtoClass as any)[CSV_SCHEMA_KEY];
+
+            if (Array.isArray(metas))
+            {
+                for (const m of metas)
+                {
+                    if (m.type === "boolean" && !options.transformers?.has(m.propertyKey))
+                    {
+                        transformers.set(m.propertyKey, boolCaster);
+                    }
+                }
+            }
+        }
+
+        // 2. Surcharges prioritaires passées directement via options.transformers
+        if (options.transformers)
+        {
+            for (const [key, fn] of options.transformers)
+            {
+                transformers.set(key, fn);
+            }
+        }
 
         const readerOptions: CsvReaderOptions = {
             hasHeader: hasHeaderDefault,
             ...options,
             headerMapping: schema ? schema.headerToProperty : undefined,
             indexMapping: schema ? schema.indexToProperty : undefined,
-            requiredColumns: requiredColumns.length > 0 ? requiredColumns : undefined,
+            transformers: transformers.size > 0 ? transformers : undefined,
+            requiredColumns: mergedRequired.length > 0 ? mergedRequired : undefined,
+            targetClass: dtoClass
         };
 
         return Csv.streamReader<T>(source, readerOptions);
@@ -58,23 +97,21 @@ export class Csv
     /**
      * Creates an optimized CSV stream writer pre-configured for a decorated DTO class.
      * 
-     * Column sequencing is resolved using the following priority:
-     * 1. Dynamic `options.columnsOrder` if explicitly provided.
-     * 2. Static `{ order: number }` values defined on `@CsvColumn` decorators.
+     * Column sequencing is resolved using the following order of precedence:
+     * 1. Dynamic `options.columnsOrder` if specified.
+     * 2. Static `{ order: number }` declared on `@CsvColumn` decorators.
      * 3. Natural property declaration order on the class prototype.
      *
      * @example
      * ```ts
-     * // Columns ordered by @CsvColumn({ order: ... })
      * const writer = Csv.streamWriterWithClass(UserDto);
-     * 
-     * // Temporary runtime override: exports only specified columns in this exact sequence
-     * const customWriter = Csv.streamWriterWithClass(UserDto, { columnsOrder: ["email", "name"] });
+     * await writer.write({ name: "Alice", price: 42 });
+     * await writer.close();
      * ```
      *
      * @template T The decorated target DTO class.
      * @param dtoClass Class constructor decorated with `@CsvColumn`.
-     * @param options Additional writer settings, including runtime column reordering.
+     * @param options Writer settings, including custom column sequences.
      * @returns A typed writer handle exposing `write`, `close`, `abort`, and `readable`.
      */
     public static streamWriterWithClass<T extends object>(
@@ -114,21 +151,19 @@ export class Csv
     }
 
     /**
-     * Streams and parses raw CSV data row-by-row as an async iterable.
-     * Accepts a raw string, a text stream, or a binary byte stream (e.g. from `fetch` or file streams).
+     * Streams and parses untyped raw CSV data row-by-row as an async iterable.
      *
      * @example
      * ```ts
-     * for await (const row of Csv.streamReader(csvData, { delimiter: "auto", hasHeader: true })) 
-     * {
+     * for await (const row of Csv.streamReader(csvData, { delimiter: "auto", hasHeader: true })) {
      *   if (row.ok) console.log(row.data);
      * }
      * ```
      *
-     * @template T Emitted row structure, defaults to `Record<string, string>`.
-     * @param source Raw CSV text or readable stream.
+     * @template T Emitted row shape, defaults to `Record<string, string>`.
+     * @param source Raw CSV string, text stream, or binary byte stream (`Uint8Array`).
      * @param options Parser configuration options.
-     * @returns An async iterable yielding `CsvRowResult<T>` items.
+     * @returns An async iterable yielding `CsvRowResult<T>` records[cite: 13, 15].
      */
     public static streamReader<T = Record<string, string>>(
         source: string | ReadableStream<string> | ReadableStream<Uint8Array>,
@@ -157,7 +192,7 @@ export class Csv
     }
 
     /**
-     * Creates a lightweight CSV writer handle supporting direct row serialization and streaming output.
+     * Creates a lightweight streaming writer handle supporting raw row serialization.
      *
      * @example
      * ```ts
@@ -166,7 +201,7 @@ export class Csv
      * await writer.close();
      * ```
      *
-     * @template T Input record or array row format.
+     * @template T Array or object input shape.
      * @param options Writer formatting options.
      * @returns An object containing `write`, `close`, `abort`, and the output `readable` stream.
      */

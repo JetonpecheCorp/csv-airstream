@@ -1,3 +1,5 @@
+import { TransformFn } from "../decorator.js";
+
 /**
  * Contextual information provided to cell validator callbacks.
  */
@@ -26,7 +28,7 @@ export type CellValidatorFn = (
 /**
  * Reader engine options for stream parsing.
  */
-export interface CsvReaderOptions
+export interface CsvReaderOptions<T = any>
 {
     /**
      * Field delimiter character or `'auto'` to infer it from the first rows (default: `','`).
@@ -99,12 +101,64 @@ export interface CsvReaderOptions
      * Internal lookup mapping 0-based column indices to target TypeScript object keys.
      */
     indexMapping?: Map<number, string>;
+
+    /**
+     * Runtime lookup mapping property keys to transformation functions.
+     *
+     * - **Low-level streams (`Csv.streamReader`)**: Allows transforming raw cell strings into typed values 
+     *   keyed by column header name or property mapping without needing a DTO class.
+     * - **DTO streams (`Csv.streamReaderWithClass`)**: Acts as a **dynamic override**. Any transformer 
+     *   provided here replaces or extends the static `transform` / `type` logic declared on `@CsvColumn` 
+     *   for that specific execution, without mutating the class definition.
+     *
+     * @example
+     * ```ts
+     * // Override standard date parsing with a custom timezone or format for a single import run:
+     * const customTransformers = new Map([
+     *   ["createdAt", (val: string) => parseCustomLocaleDate(val)]
+     * ]);
+     *
+     * for await (const row of Csv.streamReaderWithClass(stream, OrderDto, { transformers: customTransformers })) 
+     * {
+     *   // row.data.createdAt uses the runtime converter instead of the static decorator one
+     * }
+     * ```
+     */
+    transformers?: Map<string, TransformFn>;
+
+    /**
+     * Global list of string values evaluated as `true` when casting boolean fields.
+     * Overrides default values (`["1", "true", "yes", "y", "oui", "o"]`).
+     */
+    booleanTruthyValues?: string[];
+
+    /**
+     * Optional class constructor used to instantiate rows instead of returning plain object literals.
+     *
+     * When provided (or when using `Csv.streamReaderWithClass`), each emitted row is instantiated 
+     * via `new targetClass()` before properties are populated, preserving class methods, getters, 
+     * and prototype inheritance chains.
+     *
+     * @example
+     * ```ts
+     * class User {
+     *   name!: string;
+     *   get upperName() { return this.name.toUpperCase(); }
+     * }
+     *
+     * for await (const row of Csv.streamReader(stream, { targetClass: User })) 
+     * {
+     *   if (row.ok) console.log(row.data.upperName);
+     * }
+     * ```
+     */
+    targetClass?: new () => T;
 }
 
 /**
  * Writer engine options for stream formatting.
  */
-export interface CsvWriterOptions
+export interface CsvWriterOptions<T = any>
 {
     /**
      * Column delimiter string (default: `','`).
@@ -137,16 +191,40 @@ export interface CsvWriterOptions
     propertyKeys?: string[];
 
     /**
-     * Explicit list of property keys used to enforce a specific column sequence at runtime.
-     * 
-     * Overrides any static `order` rules defined on `@CsvColumn` decorators without modifying the DTO.
-     * Columns omitted from this list will be excluded from the generated CSV output.
-     * 
+     * Explicit column sequence used for row serialization.
+     *
+     * Defines the exact horizontal layout of fields in the generated CSV output.
+     * Columns omitted from this list will be excluded from the serialized stream.
+     *
+     * When used with a decorated DTO model (`Csv.streamWriterWithClass`), this configuration
+     * takes precedence over both natural property declaration order and static `{ order: number }`
+     * settings declared on `@CsvColumn` decorators.
+     *
      * @example
      * ```ts
-     * // Export only 'name' then 'id', ignoring default DTO order
-     * const writer = Csv.write(UserDto, { columnsOrder: ["name", "id"] });
+     * // Exports only 'email' followed by 'id', ignoring DTO declaration order
+     * const writer = Csv.streamWriterWithClass(UserDto, {
+     *   columnsOrder: ["email", "id"],
+     * });
      * ```
      */
-    columnsOrder?: string[];
+    columnsOrder?: (keyof T | string)[];
+
+    /**
+     * Prepends the UTF-8 Byte Order Mark (`\uFEFF`) sequence at the very beginning of the stream.
+     *
+     * Crucial when exporting CSV files intended to be opened directly in Microsoft Excel on Windows, 
+     * preventing special or accented characters (e.g. `é`, `à`, `ç`, `€`) from displaying as corrupted glyphs.
+     *
+     * @default false
+     *
+     * @example
+     * ```ts
+     * const writer = Csv.streamWriter({
+     *   headers: ["Name", "City"],
+     *   writeBom: true
+     * });
+     * ```
+     */
+    writeBom?: boolean;
 }

@@ -7,6 +7,7 @@ const Etat = {
     HORS_GUILLEMETS: 1,
     DANS_GUILLEMETS: 2,
     APRES_GUILLEMETS: 3,
+    ECHAPPER_SUIVANT: 4
 } as const;
 
 type TypeEtat = (typeof Etat)[keyof typeof Etat];
@@ -25,6 +26,7 @@ class CsvParserEngine<T>
     private readonly nombreColonnesStrict: boolean;
     private readonly validerCellule?: CellValidatorFn;
     private readonly headerMapping?: Map<string, string>;
+    private readonly targetClass?: new () => any;
 
     private enReniflage: boolean;
     private tamponReniflage = "";
@@ -38,19 +40,30 @@ class CsvParserEngine<T>
     private enTetes: string[] | null = null;
     private clesCiblesPrecalculees: string[] | null = null;
     private erreurLigne: CsvErrorDetail | null = null;
-    private dernierCaractere = "";
+    private ignorerProchainLF = false;
 
     private readonly ignorerLignesVides: boolean;
     private readonly commentaire?: string;
     private premierCaractereTraite = false;
-    private readonly colonnesRequises?: (string | number)[];
+    
+    // Remplacement du tableau par des Sets pour la validation O(1)
+    private readonly indicesRequis = new Set<number>();
+    private readonly nomsRequis = new Set<string>();
+    
     private readonly indexMapping?: Map<number, string>;
     private readonly indexMappingEntries?: [number, string][];
+
+    private readonly transformers?: Map<string, (val: string) => any>;
+    private transformateursPrecalcules: (((val: string) => any) | undefined)[] | null = null;
 
     constructor(options: CsvReaderOptions)
     {
         this.detectionAuto = options.delimiter === "auto";
         this.separateur = options.delimiter && options.delimiter !== "auto" ? options.delimiter : ",";
+
+        if (this.separateur.length !== 1)
+            throw new Error(`Invalid delimiter: "${this.separateur}". Delimiter must be a single character.`);
+
         this.separateursCandidats = options.delimiterCandidates ?? SEPARATEURS_PAR_DEFAUT;
         this.enReniflage = this.detectionAuto;
 
@@ -61,10 +74,31 @@ class CsvParserEngine<T>
         this.nombreColonnesStrict = options.strictColumnCount ?? true;
         this.ignorerLignesVides = options.skipEmptyLines ?? false;
         this.commentaire = options.comment;
-        this.colonnesRequises = options.requiredColumns;
+        
+        // Optimisation : initialisation des Sets
+        if (options.requiredColumns) {
+            for (const req of options.requiredColumns) {
+                if (typeof req === "number") {
+                    this.indicesRequis.add(req);
+                } else {
+                    this.nomsRequis.add(req);
+                }
+            }
+        }
+        
         this.headerMapping = options.headerMapping;
         this.indexMapping = options.indexMapping;
         this.indexMappingEntries = options.indexMapping ? Array.from(options.indexMapping.entries()) : undefined;
+        this.transformers = options.transformers;
+        this.targetClass = options.targetClass;
+
+        if (this.indexMappingEntries && this.transformers) 
+        {
+            this.transformateursPrecalcules = this.indexMappingEntries.map(([_, propKey]) => 
+                this.transformers?.get(propKey)
+            );
+        }
+
         this.validerCellule = options.validateCell;
     }
 
@@ -73,6 +107,8 @@ class CsvParserEngine<T>
         controller: TransformStreamDefaultController<CsvRowResult<T>>
     ): void
     {
+        if (chunk.length === 0) return;
+
         if (this.enReniflage)
         {
             this.reniflerMorceau(chunk, controller);
@@ -91,7 +127,12 @@ class CsvParserEngine<T>
             this.validerSeparateurEtRejouer(controller);
         }
 
-        if (this.etat === Etat.DANS_GUILLEMETS)
+        if (this.ignorerProchainLF)
+        {
+            this.ignorerProchainLF = false;
+        }
+
+        if (this.etat === Etat.DANS_GUILLEMETS || this.etat === Etat.ECHAPPER_SUIVANT)
         {
             controller.enqueue({
                 ok: false,
@@ -120,7 +161,7 @@ class CsvParserEngine<T>
         controller: TransformStreamDefaultController<CsvRowResult<T>>
     ): void
     {
-        if (!this.premierCaractereTraite)
+        if (!this.premierCaractereTraite && morceau.length > 0)
         {
             this.premierCaractereTraite = true;
             if (morceau.charCodeAt(0) === 0xFEFF)
@@ -129,7 +170,7 @@ class CsvParserEngine<T>
             }
         }
 
-        let indexCoupure = -1;
+        let indexArret = -1;
 
         for (let i = 0; i < morceau.length; i++)
         {
@@ -140,21 +181,22 @@ class CsvParserEngine<T>
             {
                 this.guillemetOuvertReniflage = !this.guillemetOuvertReniflage;
             }
-            else if (!this.guillemetOuvertReniflage && (caractere === "\n" || caractere === "\r"))
+            else if (!this.guillemetOuvertReniflage)
             {
-                indexCoupure = i + 1;
-                break;
+                if (caractere === "\n" || caractere === "\r" || this.tamponReniflage.length >= 8192)
+                {
+                    indexArret = i + 1;
+                    break;
+                }
             }
         }
 
-        if (indexCoupure !== -1 || this.tamponReniflage.length >= 4096)
+        if (indexArret !== -1)
         {
-            const reste = indexCoupure !== -1 
-                ? morceau.slice(indexCoupure) 
-                : morceau.slice(this.tamponReniflage.length);
-
+            const reste = morceau.slice(indexArret);
             this.validerSeparateurEtRejouer(controller);
 
+            // Ne pas re-consommer si le reste est vide
             if (reste.length > 0)
             {
                 this.consommerMorceau(reste, controller);
@@ -171,6 +213,8 @@ class CsvParserEngine<T>
 
         const texteARejouer = this.tamponReniflage;
         this.tamponReniflage = "";
+        
+        // On évite de retraiter le BOM si validerSeparateurEtRejouer est appelé au milieu du stream
         this.consommerMorceau(texteARejouer, controller);
     }
 
@@ -202,7 +246,7 @@ class CsvParserEngine<T>
                     if (caractere === this.caractereGuillemet)
                     {
                         dansGuillemet = !dansGuillemet;
-                    } 
+                    }
                     else if (!dansGuillemet && caractere === candidat)
                     {
                         compteur++;
@@ -212,7 +256,7 @@ class CsvParserEngine<T>
                 if (frequenceLigne === null)
                 {
                     frequenceLigne = compteur;
-                } 
+                }
                 else if (frequenceLigne !== compteur)
                 {
                     candidatCoherent = false;
@@ -240,7 +284,8 @@ class CsvParserEngine<T>
     {
         let debut = 0;
 
-        if (!this.premierCaractereTraite)
+        // Gestion du BOM (Byte Order Mark) initial
+        if (!this.premierCaractereTraite && morceau.length > 0)
         {
             this.premierCaractereTraite = true;
             if (morceau.charCodeAt(0) === 0xFEFF)
@@ -249,131 +294,129 @@ class CsvParserEngine<T>
             }
         }
 
+        let indexDebutTexte = debut;
+
         for (let i = debut; i < morceau.length; i++)
         {
             const caractere = morceau[i];
 
-            if (this.dernierCaractere === "\r" && caractere === "\n")
+            // Si on doit ignorer un \n suite à un \r (gestion des retours chariot Windows \r\n)
+            if (this.ignorerProchainLF)
             {
-                this.dernierCaractere = caractere;
-                continue;
+                this.ignorerProchainLF = false;
+                if (caractere === "\n")
+                {
+                    indexDebutTexte = i + 1;
+                    continue;
+                }
             }
-            this.dernierCaractere = caractere;
 
-            this.traiterCaractere(caractere, controller);
+            switch (this.etat)
+            {
+                case Etat.DEBUT_CHAMP:
+                    if (caractere === this.caractereGuillemet)
+                    {
+                        this.etat = Etat.DANS_GUILLEMETS;
+                        indexDebutTexte = i + 1; // On ignore le guillemet ouvrant dans le texte
+                    }
+                    else if (caractere === this.separateur)
+                    {
+                        this.enregistrerChamp(); // Le champ est vide
+                        indexDebutTexte = i + 1; // On avance après le séparateur
+                    }
+                    else if (caractere === "\r" || caractere === "\n")
+                    {
+                        if (caractere === "\r") this.ignorerProchainLF = true;
+                        this.emettreLigne(controller);
+                        indexDebutTexte = i + 1; // On avance après le saut de ligne
+                    }
+                    else
+                    {
+                        this.etat = Etat.HORS_GUILLEMETS;
+                        // On ne modifie PAS indexDebutTexte car ce caractère fait partie de la valeur
+                    }
+                    break;
+
+                case Etat.HORS_GUILLEMETS:
+                    if (caractere === this.separateur)
+                    {
+                        this.champCourant += morceau.slice(indexDebutTexte, i);
+                        this.enregistrerChamp();
+                        this.etat = Etat.DEBUT_CHAMP;
+                        indexDebutTexte = i + 1;
+                    }
+                    else if (caractere === "\r" || caractere === "\n")
+                    {
+                        this.champCourant += morceau.slice(indexDebutTexte, i);
+                        if (caractere === "\r") this.ignorerProchainLF = true;
+                        this.emettreLigne(controller);
+                        indexDebutTexte = i + 1;
+                    }
+                    else if (caractere === this.caractereGuillemet)
+                    {
+                        this.enregistrerErreurSyntaxe(`Unexpected quote inside unquoted field at line ${this.numeroLigne}.`);
+                        // Le guillemet sera inclus naturellement lors du prochain slice()
+                    }
+                    break;
+
+                case Etat.DANS_GUILLEMETS:
+                    if (this.caractereEchappement !== this.caractereGuillemet && caractere === this.caractereEchappement)
+                    {
+                        this.champCourant += morceau.slice(indexDebutTexte, i);
+                        this.etat = Etat.ECHAPPER_SUIVANT;
+                        indexDebutTexte = i + 1; // On ignore le caractère d'échappement
+                    }
+                    else if (caractere === this.caractereGuillemet)
+                    {
+                        this.champCourant += morceau.slice(indexDebutTexte, i);
+                        this.etat = Etat.APRES_GUILLEMETS;
+                        indexDebutTexte = i + 1; // On ignore le guillemet fermant
+                    }
+                    break;
+
+                case Etat.APRES_GUILLEMETS:
+                    if (this.caractereEchappement === this.caractereGuillemet && caractere === this.caractereGuillemet)
+                    {
+                        // C'était un double guillemet pour échapper un guillemet (ex: "")
+                        this.champCourant += this.caractereGuillemet;
+                        this.etat = Etat.DANS_GUILLEMETS;
+                        indexDebutTexte = i + 1;
+                    }
+                    else if (caractere === this.separateur)
+                    {
+                        this.enregistrerChamp();
+                        this.etat = Etat.DEBUT_CHAMP;
+                        indexDebutTexte = i + 1;
+                    }
+                    else if (caractere === "\r" || caractere === "\n")
+                    {
+                        if (caractere === "\r") this.ignorerProchainLF = true;
+                        this.emettreLigne(controller);
+                        indexDebutTexte = i + 1;
+                    }
+                    else
+                    {
+                        this.enregistrerErreurSyntaxe(`Unexpected character "${caractere}" following closed quote at line ${this.numeroLigne}.`);
+                        this.etat = Etat.HORS_GUILLEMETS;
+                        indexDebutTexte = i; // Ce caractère inattendu devient le début de la suite du texte
+                    }
+                    break;
+
+                case Etat.ECHAPPER_SUIVANT:
+                    this.champCourant += caractere;
+                    this.etat = Etat.DANS_GUILLEMETS;
+                    indexDebutTexte = i + 1;
+                    break;
+            }
         }
-    }
 
-    private traiterCaractere(
-        caractere: string,
-        controller: TransformStreamDefaultController<CsvRowResult<T>>
-    ): void
-    {
-        switch (this.etat)
+        // À la fin du chunk (morceau), on ajoute ce qu'il reste si on était en train de lire du texte
+        if (indexDebutTexte < morceau.length)
         {
-            case Etat.DEBUT_CHAMP:
-                this.gererDebutChamp(caractere, controller);
-                break;
-
-            case Etat.HORS_GUILLEMETS:
-                this.gererHorsGuillemets(caractere, controller);
-                break;
-
-            case Etat.DANS_GUILLEMETS:
-                this.gererDansGuillemets(caractere);
-                break;
-
-            case Etat.APRES_GUILLEMETS:
-                this.gererApresGuillemets(caractere, controller);
-                break;
-        }
-    }
-
-    private gererDebutChamp(
-        caractere: string,
-        controller: TransformStreamDefaultController<CsvRowResult<T>>
-    ): void
-    {
-        if (caractere === this.caractereGuillemet)
-        {
-            this.etat = Etat.DANS_GUILLEMETS;
-        }
-        else if (caractere === this.separateur)
-        {
-            this.enregistrerChamp();
-        }
-        else if (caractere === "\r" || caractere === "\n")
-        {
-            this.emettreLigne(controller);
-        }
-        else
-        {
-            this.champCourant += caractere;
-            this.etat = Etat.HORS_GUILLEMETS;
-        }
-    }
-
-    private gererHorsGuillemets(
-        caractere: string,
-        controller: TransformStreamDefaultController<CsvRowResult<T>>
-    ): void
-    {
-        if (caractere === this.separateur)
-        {
-            this.enregistrerChamp();
-            this.etat = Etat.DEBUT_CHAMP;
-        } 
-        else if (caractere === "\r" || caractere === "\n")
-        {
-            this.emettreLigne(controller);
-        } 
-        else if (caractere === this.caractereGuillemet)
-        {
-            this.enregistrerErreurSyntaxe(`Unexpected quote inside unquoted field at line ${this.numeroLigne}.`);
-            this.champCourant += caractere;
-        } 
-        else
-        {
-            this.champCourant += caractere;
-        }
-    }
-
-    private gererDansGuillemets(caractere: string): void
-    {
-        if (caractere === this.caractereEchappement && this.caractereEchappement === this.caractereGuillemet)
-        {
-            this.etat = Etat.APRES_GUILLEMETS;
-        } 
-        else
-        {
-            this.champCourant += caractere;
-        }
-    }
-
-    private gererApresGuillemets(
-        caractere: string,
-        controller: TransformStreamDefaultController<CsvRowResult<T>>
-    ): void
-    {
-        if (caractere === this.caractereGuillemet)
-        {
-            this.champCourant += this.caractereGuillemet;
-            this.etat = Etat.DANS_GUILLEMETS;
-        } 
-        else if (caractere === this.separateur)
-        {
-            this.enregistrerChamp();
-            this.etat = Etat.DEBUT_CHAMP;
-        } 
-        else if (caractere === "\r" || caractere === "\n")
-        {
-            this.emettreLigne(controller);
-        } 
-        else
-        {
-            this.enregistrerErreurSyntaxe(`Unexpected character "${caractere}" following closed quote at line ${this.numeroLigne}.`);
-            this.champCourant += caractere;
-            this.etat = Etat.HORS_GUILLEMETS;
+            if (this.etat === Etat.HORS_GUILLEMETS || this.etat === Etat.DANS_GUILLEMETS)
+            {
+                this.champCourant += morceau.slice(indexDebutTexte);
+            }
         }
     }
 
@@ -394,8 +437,8 @@ class CsvParserEngine<T>
 
     private enregistrerChamp(): void
     {
-        const valeur = this.rogner && this.etat !== Etat.APRES_GUILLEMETS 
-            ? this.champCourant.trim() 
+        const valeur = this.rogner && this.etat !== Etat.APRES_GUILLEMETS
+            ? this.champCourant.trim()
             : this.champCourant;
 
         this.ligneCourante.push(valeur);
@@ -440,19 +483,44 @@ class CsvParserEngine<T>
             return;
         }
 
-        // 1. Initialisation de l'en-tête : mapping calculé une seule fois
         if (this.aEnTete && this.enTetes === null)
         {
             this.enTetes = [...this.ligneCourante];
             this.nombreColonnesAttendu = this.enTetes.length;
 
+            if (this.nomsRequis.size > 0)
+            {
+                for (const req of this.nomsRequis)
+                {
+                    if (!this.enTetes.includes(req))
+                    {
+                        controller.enqueue({
+                            ok: false,
+                            line: this.numeroLigne,
+                            error: {
+                                code: CsvErrorCode.MISSING_HEADER_COLUMN,
+                                line: this.numeroLigne,
+                                columnName: req,
+                                message: `Required column header "${req}" is missing from the CSV header row.`,
+                            },
+                            raw: this.construireLigneBrute(),
+                        });
+                        this.reinitialiserLigne();
+                        return;
+                    }
+                }
+            }
+
             this.clesCiblesPrecalculees = new Array(this.enTetes.length);
+            this.transformateursPrecalcules = new Array(this.enTetes.length);
+
             for (let i = 0; i < this.enTetes.length; i++)
             {
-                // Priorité : 1. Mapping par header, 2. Mapping par index, 3. Header brut
-                const parHeader = this.headerMapping?.get(this.enTetes[i]);
-                const parIndex = this.indexMapping?.get(i);
-                this.clesCiblesPrecalculees[i] = parHeader ?? parIndex ?? this.enTetes[i];
+                const headerBrut = this.enTetes[i];
+                const propKey = this.headerMapping?.get(headerBrut) ?? this.indexMapping?.get(i) ?? headerBrut;
+
+                this.clesCiblesPrecalculees[i] = propKey;
+                this.transformateursPrecalcules[i] = this.transformers?.get(propKey);
             }
 
             this.reinitialiserLigne();
@@ -464,7 +532,7 @@ class CsvParserEngine<T>
             if (this.nombreColonnesAttendu === null)
             {
                 this.nombreColonnesAttendu = this.ligneCourante.length;
-            } 
+            }
             else if (this.ligneCourante.length !== this.nombreColonnesAttendu)
             {
                 controller.enqueue({
@@ -482,17 +550,14 @@ class CsvParserEngine<T>
             }
         }
 
-        // Vérification des colonnes obligatoires
-        if (this.colonnesRequises && this.colonnesRequises.length > 0)
+        if (this.indicesRequis.size > 0 || this.nomsRequis.size > 0 || this.validerCellule)
         {
             for (let i = 0; i < this.ligneCourante.length; i++)
             {
                 const valeur = this.ligneCourante[i];
                 const nomColonne = this.enTetes ? this.enTetes[i] : undefined;
 
-                const estRequise = 
-                    this.colonnesRequises.includes(i) || 
-                    (nomColonne !== undefined && this.colonnesRequises.includes(nomColonne));
+                const estRequise = this.indicesRequis.has(i) || (nomColonne !== undefined && this.nomsRequis.has(nomColonne));
 
                 if (estRequise && valeur.trim().length === 0)
                 {
@@ -512,64 +577,65 @@ class CsvParserEngine<T>
                     this.reinitialiserLigne();
                     return;
                 }
-            }
-        }
 
-        if (this.validerCellule)
-        {
-            for (let i = 0; i < this.ligneCourante.length; i++)
-            {
-                const valeur = this.ligneCourante[i];
-                const nomColonne = this.enTetes ? this.enTetes[i] : undefined;
-                const verification = this.validerCellule(valeur, {
-                    line: this.numeroLigne,
-                    columnIndex: i,
-                    columnName: nomColonne,
-                });
-
-                if (verification !== true)
+                if (this.validerCellule)
                 {
-                    const codePersonnalise = typeof verification === "string" ? verification : CsvErrorCode.INVALID_COLUMN_VALUE;
-                    controller.enqueue({
-                        ok: false,
+                    const verification = this.validerCellule(valeur, {
                         line: this.numeroLigne,
-                        error: {
-                            code: codePersonnalise,
-                            line: this.numeroLigne,
-                            columnIndex: i,
-                            columnName: nomColonne,
-                            invalidValue: valeur,
-                            message: `Validation failed for column ${nomColonne ?? i} with value "${valeur}".`,
-                        },
-                        raw: this.construireLigneBrute(),
+                        columnIndex: i,
+                        columnName: nomColonne,
                     });
-                    this.reinitialiserLigne();
-                    return;
+
+                    if (verification !== true)
+                    {
+                        const codePersonnalise = typeof verification === "string" ? verification : CsvErrorCode.INVALID_COLUMN_VALUE;
+                        controller.enqueue({
+                            ok: false,
+                            line: this.numeroLigne,
+                            error: {
+                                code: codePersonnalise,
+                                line: this.numeroLigne,
+                                columnIndex: i,
+                                columnName: nomColonne,
+                                invalidValue: valeur,
+                                message: `Validation failed for column ${nomColonne ?? i} with value "${valeur}".`,
+                            },
+                            raw: this.construireLigneBrute(),
+                        });
+                        this.reinitialiserLigne();
+                        return;
+                    }
                 }
             }
         }
 
-        // 2. Émission de l'objet en O(1) via le tableau plat
         if (this.aEnTete && this.clesCiblesPrecalculees)
         {
-            const objet: Record<string, string> = {};
-            for (let i = 0; i < this.clesCiblesPrecalculees.length; i++)
+            const nbCols = this.clesCiblesPrecalculees.length;
+            const objet: Record<string, any> = this.targetClass ? new this.targetClass() : {};
+
+            for (let i = 0; i < nbCols; i++)
             {
-                objet[this.clesCiblesPrecalculees[i]] = this.ligneCourante[i] ?? "";
+                const val = this.ligneCourante[i] ?? "";
+                const fn = this.transformateursPrecalcules![i];
+                objet[this.clesCiblesPrecalculees[i]] = fn ? fn(val) : val;
             }
+
             controller.enqueue({
                 ok: true,
                 line: this.numeroLigne,
                 data: objet as unknown as T,
             });
-        } 
+        }
         else if (this.indexMappingEntries && this.indexMappingEntries.length > 0)
         {
-            const objet: Record<string, string> = {};
+            const objet: Record<string, any> = this.targetClass ? new this.targetClass() : {};
             for (let i = 0; i < this.indexMappingEntries.length; i++)
             {
                 const [colIndex, propKey] = this.indexMappingEntries[i];
-                objet[propKey] = this.ligneCourante[colIndex] ?? "";
+                const val = this.ligneCourante[colIndex] ?? "";
+                const fn = this.transformateursPrecalcules ? this.transformateursPrecalcules[i] : undefined;
+                objet[propKey] = fn ? fn(val) : val;
             }
             controller.enqueue({
                 ok: true,
@@ -603,10 +669,7 @@ class CsvParserEngine<T>
     }
 }
 
-export class CsvReaderStream<T = string[]> extends TransformStream<
-    string,
-    CsvRowResult<T>
->
+export class CsvReaderStream<T = string[]> extends TransformStream<string, CsvRowResult<T>>
 {
     constructor(options: CsvReaderOptions = {})
     {

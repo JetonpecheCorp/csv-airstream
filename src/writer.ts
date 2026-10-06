@@ -8,10 +8,17 @@ class CsvWriterEngine
     private readonly caractereGuillemet: string;
     private readonly finDeLigne: string;
     private readonly guillemetsSystematiques: boolean;
+    private readonly writeBom: boolean;
     private readonly enTetes?: string[];
     private readonly clesProprietes?: string[];
     private readonly regexGuillemetsRequis: RegExp;
+    private readonly regexGuillemetGlobal: RegExp;
+    private readonly guillemetDouble: string;
     private enTeteEcrite = false;
+    private premierMorceauEmis = false;
+
+    private tampon: string[] = [];
+    private readonly tailleMaxTampon = 500;
 
     constructor(options: CsvWriterOptions)
     {
@@ -19,12 +26,17 @@ class CsvWriterEngine
         this.caractereGuillemet = options.quoteChar ?? '"';
         this.finDeLigne = options.lineTerminator ?? "\r\n";
         this.guillemetsSystematiques = options.alwaysQuote ?? false;
+        this.writeBom = options.writeBom ?? false;
         this.enTetes = options.headers;
         this.clesProprietes = options.propertyKeys;
 
-        const separateurEchappe = this.echapperRegex(this.separateur);
-        const guillemetEchappe = this.echapperRegex(this.caractereGuillemet);
-        this.regexGuillemetsRequis = new RegExp(`[${separateurEchappe}${guillemetEchappe}\\r\\n]`);
+        const sepEscaped = this.echapperRegex(this.separateur);
+        const quoteEscaped = this.echapperRegex(this.caractereGuillemet);
+        
+        // Regex corrigée pour les délimiteurs multi-caractères
+        this.regexGuillemetsRequis = new RegExp(`(?:${sepEscaped}|${quoteEscaped}|\\r|\\n)`);
+        this.regexGuillemetGlobal = new RegExp(quoteEscaped, "g");
+        this.guillemetDouble = `${this.caractereGuillemet}${this.caractereGuillemet}`;
     }
 
     public writeRow(
@@ -32,10 +44,25 @@ class CsvWriterEngine
         controller: TransformStreamDefaultController<string>
     ): void
     {
+        let sortieChunk = "";
+        const prefixe = (!this.premierMorceauEmis && this.writeBom) ? "\uFEFF" : "";
+
         if (!this.enTeteEcrite)
         {
-            this.ecrireEnTetesSiBesoin(ligne, controller);
             this.enTeteEcrite = true;
+            let listeEnTetes = this.enTetes;
+
+            if (!listeEnTetes && !Array.isArray(ligne) && typeof ligne === "object" && ligne !== null)
+            {
+                listeEnTetes = Object.keys(ligne);
+            }
+
+            if (listeEnTetes && listeEnTetes.length > 0)
+            {
+                const enTetesFormatees = listeEnTetes.map((h) => this.formaterCellule(h));
+                sortieChunk += prefixe + enTetesFormatees.join(this.separateur) + this.finDeLigne;
+                this.premierMorceauEmis = true;
+            }
         }
 
         const cellules: string[] = [];
@@ -50,44 +77,33 @@ class CsvWriterEngine
         else if (typeof ligne === "object" && ligne !== null)
         {
             const enregistrement = ligne as Record<string, unknown>;
-
-            // Chemin O(1) si les propriétés sont pré-calculées par le décorateur
-            if (this.clesProprietes)
+            const cles = this.clesProprietes ?? this.enTetes ?? Object.keys(enregistrement);
+            
+            for (let i = 0; i < cles.length; i++)
             {
-                for (let i = 0; i < this.clesProprietes.length; i++)
-                {
-                    cellules.push(this.formaterCellule(enregistrement[this.clesProprietes[i]]));
-                }
-            }
-            else
-            {
-                const cles = this.enTetes ?? Object.keys(enregistrement);
-                for (let i = 0; i < cles.length; i++)
-                {
-                    cellules.push(this.formaterCellule(enregistrement[cles[i]]));
-                }
+                cellules.push(this.formaterCellule(enregistrement[cles[i]]));
             }
         }
 
-        controller.enqueue(cellules.join(this.separateur) + this.finDeLigne);
+        const debutLigne = (!this.premierMorceauEmis && this.writeBom) ? "\uFEFF" : "";
+        this.premierMorceauEmis = true;
+        
+        sortieChunk += debutLigne + cellules.join(this.separateur) + this.finDeLigne;
+        this.tampon.push(sortieChunk);
+
+        // Vidage conditionnel du tampon
+        if (this.tampon.length >= this.tailleMaxTampon)
+        {
+            this.flush(controller);
+        }
     }
 
-    private ecrireEnTetesSiBesoin(
-        premiereLigne: RowInput,
-        controller: TransformStreamDefaultController<string>
-    ): void
+    public flush(controller: TransformStreamDefaultController<string>): void
     {
-        let listeEnTetes: string[] | undefined = this.enTetes;
-
-        if (!listeEnTetes && !Array.isArray(premiereLigne) && typeof premiereLigne === "object" && premiereLigne !== null)
+        if (this.tampon.length > 0)
         {
-            listeEnTetes = Object.keys(premiereLigne);
-        }
-
-        if (listeEnTetes && listeEnTetes.length > 0)
-        {
-            const enTetesFormatees = listeEnTetes.map((h) => this.formaterCellule(h));
-            controller.enqueue(enTetesFormatees.join(this.separateur) + this.finDeLigne);
+            controller.enqueue(this.tampon.join(""));
+            this.tampon = [];
         }
     }
 
@@ -103,7 +119,7 @@ class CsvWriterEngine
 
         if (necessiteGuillemets)
         {
-            const echappee = chaine.replaceAll(this.caractereGuillemet, `${this.caractereGuillemet}${this.caractereGuillemet}`);
+            const echappee = chaine.replace(this.regexGuillemetGlobal, this.guillemetDouble);
             return `${this.caractereGuillemet}${echappee}${this.caractereGuillemet}`;
         }
 
@@ -126,6 +142,11 @@ export class CsvWriterStream<T extends RowInput = RowInput> extends TransformStr
             transform(chunk, controller)
             {
                 moteur.writeRow(chunk, controller);
+            },
+            flush(controller)
+            {
+                // Garantit que les dernières lignes sont émises avant la fermeture
+                moteur.flush(controller);
             },
         });
     }
