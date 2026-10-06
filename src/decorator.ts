@@ -151,7 +151,12 @@ function registerDecorator(meta: { header?: string; index?: number; order?: numb
             {
                 enregistrerMeta(this.constructor, propName, meta.header, meta.index, meta.order, meta.required);
             });
-            return;
+
+            return function (this: any, initialValue: any) 
+            {
+                enregistrerMeta(this.constructor, propName, meta.header, meta.index, meta.order, meta.required);
+                return initialValue;
+            };
         }
 
         // TypeScript Legacy (experimentalDecorators: true)

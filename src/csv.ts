@@ -40,14 +40,16 @@ export class Csv
         const schema = getCsvSchema(dtoClass);
         const hasHeaderDefault = schema ? schema.headers.length > 0 : false;
 
+        const staticRequired = schema?.requiredColumns ?? [];
+        const runtimeRequired = options.requiredColumns ?? [];
+        const requiredColumns = Array.from(new Set([...staticRequired, ...runtimeRequired]));
+
         const readerOptions: CsvReaderOptions = {
             hasHeader: hasHeaderDefault,
             ...options,
             headerMapping: schema ? schema.headerToProperty : undefined,
             indexMapping: schema ? schema.indexToProperty : undefined,
-            requiredColumns: schema && schema.requiredColumns.length > 0 
-                ? schema.requiredColumns 
-                : options.requiredColumns,
+            requiredColumns: requiredColumns.length > 0 ? requiredColumns : undefined,
         };
 
         return Csv.streamReader<T>(source, readerOptions);

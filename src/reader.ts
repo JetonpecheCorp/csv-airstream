@@ -45,6 +45,7 @@ class CsvParserEngine<T>
     private premierCaractereTraite = false;
     private readonly colonnesRequises?: (string | number)[];
     private readonly indexMapping?: Map<number, string>;
+    private readonly indexMappingEntries?: [number, string][];
 
     constructor(options: CsvReaderOptions)
     {
@@ -63,6 +64,7 @@ class CsvParserEngine<T>
         this.colonnesRequises = options.requiredColumns;
         this.headerMapping = options.headerMapping;
         this.indexMapping = options.indexMapping;
+        this.indexMappingEntries = options.indexMapping ? Array.from(options.indexMapping.entries()) : undefined;
         this.validerCellule = options.validateCell;
     }
 
@@ -561,12 +563,12 @@ class CsvParserEngine<T>
                 data: objet as unknown as T,
             });
         } 
-        else if (this.indexMapping && this.indexMapping.size > 0)
+        else if (this.indexMappingEntries && this.indexMappingEntries.length > 0)
         {
-            // Mode sans header : construction directe de l'objet DTO typé via index
             const objet: Record<string, string> = {};
-            for (const [colIndex, propKey] of this.indexMapping.entries())
+            for (let i = 0; i < this.indexMappingEntries.length; i++)
             {
+                const [colIndex, propKey] = this.indexMappingEntries[i];
                 objet[propKey] = this.ligneCourante[colIndex] ?? "";
             }
             controller.enqueue({
