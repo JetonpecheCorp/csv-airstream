@@ -8,6 +8,7 @@ export const CsvErrorCode = {
     INVALID_COLUMN_VALUE: "INVALID_COLUMN_VALUE",
     MISSING_REQUIRED_COLUMN: "MISSING_REQUIRED_COLUMN",
     MISSING_HEADER_COLUMN: "MISSING_HEADER_COLUMN",
+    DTO_INSTANTIATION_ERROR: "DTO_INSTANTIATION_ERROR"
 } as const;
 
 export type CsvErrorCode = (typeof CsvErrorCode)[keyof typeof CsvErrorCode];

@@ -44,12 +44,11 @@ class CsvParserEngine<T>
 
     private readonly ignorerLignesVides: boolean;
     private readonly commentaire?: string;
-    private premierCaractereTraite = false;
-    
+
     // Remplacement du tableau par des Sets pour la validation O(1)
     private readonly indicesRequis = new Set<number>();
     private readonly nomsRequis = new Set<string>();
-    
+
     private readonly indexMapping?: Map<number, string>;
     private readonly indexMappingEntries?: [number, string][];
 
@@ -74,18 +73,22 @@ class CsvParserEngine<T>
         this.nombreColonnesStrict = options.strictColumnCount ?? true;
         this.ignorerLignesVides = options.skipEmptyLines ?? false;
         this.commentaire = options.comment;
-        
+
         // Optimisation : initialisation des Sets
-        if (options.requiredColumns) {
-            for (const req of options.requiredColumns) {
-                if (typeof req === "number") {
+        if (options.requiredColumns)
+        {
+            for (const req of options.requiredColumns)
+            {
+                if (typeof req === "number")
+                {
                     this.indicesRequis.add(req);
-                } else {
+                } else
+                {
                     this.nomsRequis.add(req);
                 }
             }
         }
-        
+
         this.headerMapping = options.headerMapping;
         this.indexMapping = options.indexMapping;
         this.indexMappingEntries = options.indexMapping ? Array.from(options.indexMapping.entries()) : undefined;
@@ -94,7 +97,7 @@ class CsvParserEngine<T>
 
         if (this.indexMappingEntries && this.transformers) 
         {
-            this.transformateursPrecalcules = this.indexMappingEntries.map(([_, propKey]) => 
+            this.transformateursPrecalcules = this.indexMappingEntries.map(([_, propKey]) =>
                 this.transformers?.get(propKey)
             );
         }
@@ -207,7 +210,7 @@ class CsvParserEngine<T>
 
         const texteARejouer = this.tamponReniflage;
         this.tamponReniflage = "";
-        
+
         // On évite de retraiter le BOM si validerSeparateurEtRejouer est appelé au milieu du stream
         this.consommerMorceau(texteARejouer, controller);
     }
@@ -276,11 +279,9 @@ class CsvParserEngine<T>
         controller: TransformStreamDefaultController<CsvRowResult<T>>
     ): void
     {
-        let debut = 0;
+        let indexDebutTexte = 0;
 
-        let indexDebutTexte = debut;
-
-        for (let i = debut; i < morceau.length; i++)
+        for (let i = 0; i < morceau.length; i++)
         {
             const caractere = morceau[i];
 
@@ -596,7 +597,35 @@ class CsvParserEngine<T>
         if (this.aEnTete && this.clesCiblesPrecalculees)
         {
             const nbCols = this.clesCiblesPrecalculees.length;
-            const objet: Record<string, any> = this.targetClass ? new this.targetClass() : {};
+
+            let objet: Record<string, any>;
+            if (this.targetClass)
+            {
+                try
+                {
+                    objet = new this.targetClass();
+                } 
+                catch (erreur)
+                {
+                    controller.enqueue({ 
+                        ok: false, 
+                        line: this.numeroLigne, 
+                        error: { 
+                            code: CsvErrorCode.DTO_INSTANTIATION_ERROR, 
+                            line: this.numeroLigne, 
+                            message: "Unable to instantiate class. Check that it has a constructor without arguments."
+                        }, 
+                        raw: this.construireLigneBrute() 
+                    });
+
+                    this.reinitialiserLigne();
+                    return;
+                }
+            } 
+            else
+            {
+                objet = {};
+            }
 
             for (let i = 0; i < nbCols; i++)
             {
@@ -613,7 +642,34 @@ class CsvParserEngine<T>
         }
         else if (this.indexMappingEntries && this.indexMappingEntries.length > 0)
         {
-            const objet: Record<string, any> = this.targetClass ? new this.targetClass() : {};
+            let objet: Record<string, any>;
+            if (this.targetClass)
+            {
+                try
+                {
+                    objet = new this.targetClass();
+                } catch (erreur)
+                {
+                    controller.enqueue({ 
+                        ok: false, 
+                        line: this.numeroLigne, 
+                        error: { 
+                            code: CsvErrorCode.DTO_INSTANTIATION_ERROR, 
+                            line: this.numeroLigne, 
+                            message: "Unable to instantiate class. Check that it has a constructor without arguments."
+                        }, 
+                        raw: this.construireLigneBrute()
+                    });
+
+                    this.reinitialiserLigne();
+                    return;
+                }
+            } 
+            else
+            {
+                objet = {};
+            }
+
             for (let i = 0; i < this.indexMappingEntries.length; i++)
             {
                 const [colIndex, propKey] = this.indexMappingEntries[i];
@@ -621,6 +677,7 @@ class CsvParserEngine<T>
                 const fn = this.transformateursPrecalcules ? this.transformateursPrecalcules[i] : undefined;
                 objet[propKey] = fn ? fn(val) : val;
             }
+
             controller.enqueue({
                 ok: true,
                 line: this.numeroLigne,

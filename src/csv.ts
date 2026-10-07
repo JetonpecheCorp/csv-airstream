@@ -184,8 +184,42 @@ export class Csv
         }
         else
         {
-            const streamAny = source as ReadableStream<unknown>;
-            textStream = streamAny.pipeThrough(new TextDecoderStream()) as ReadableStream<string>;
+            // Décodeur instancié uniquement si un flux binaire est détecté
+            let decoder: TextDecoder | null = null;
+            
+            const autoDecoder = new TransformStream<any, string>({
+                transform(chunk, controller) 
+                {
+                    if (typeof chunk === "string") 
+                    {
+                        controller.enqueue(chunk);
+                    } 
+                    else if (chunk instanceof Uint8Array || ArrayBuffer.isView(chunk)) 
+                    {
+                        if (!decoder) 
+                            decoder = new TextDecoder("utf-8", { fatal: false });
+
+                        // L'option { stream: true } gère les caractères coupés au milieu d'un chunk
+                        controller.enqueue(decoder.decode(chunk, { stream: true }));
+                    } 
+                    else 
+                    {
+                        // Fallback pour tout autre type inattendu
+                        controller.enqueue(String(chunk));
+                    }
+                },
+                flush(controller) 
+                {
+                    if (decoder) 
+                    {
+                        const reste = decoder.decode();
+                        if (reste) 
+                            controller.enqueue(reste);
+                    }
+                }
+            });
+
+            textStream = source.pipeThrough(autoDecoder);
         }
 
         return textStream.pipeThrough(new CsvReaderStream<T>(options));
