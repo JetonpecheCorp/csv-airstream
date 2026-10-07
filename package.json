@@ -1,6 +1,6 @@
 {
   "name": "@jetonpeche/csv-airstream",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "type": "module",
   "author": "jetonpeche",
   "description": "Zero-dependency, memory-safe CSV streaming parser & writer using Web Streams. Features TypeScript DTO decorators and a resilient Result pattern.",
