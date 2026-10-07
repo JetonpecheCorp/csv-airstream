@@ -49,16 +49,19 @@ Here is the exact execution order when using `streamReaderWithClass`:
 ```mermaid
 flowchart TD
     subgraph Setup ["1. Initialization (Setup Phase)"]
+        direction TB
         A["<b>Decorators (@CsvColumn)</b><br/>Register metadata on the class prototype"] --> B
         B["<b>streamReaderWithClass()</b><br/>Compiles schema & caches O(1) index maps"]
     end
 
     subgraph Streaming ["2. Data Streaming (Chunk Phase)"]
+        direction TB
         C["<b>Sanitization</b><br/>Strips UTF-8 BOM markers"] --> D
         D["<b>State Machine (O(n))</b><br/>Parses raw text into string arrays"]
     end
 
     subgraph Row ["3. Row Processing (Per Iteration)"]
+        direction TB
         E["<b>1. Structural Validation</b><br/>Strict column count & missing fields check"] --> F
         F["<b>2. validateCell()</b><br/>Calls custom runtime validation callback"] --> G
         G["<b>3. Instantiation</b><br/>Creates DTO instance (<i>new Class()</i>)"] --> H

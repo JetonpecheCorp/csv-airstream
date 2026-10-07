@@ -45,16 +45,19 @@ Voici l'ordre exact d'exécution lorsque vous utilisez `streamReaderWithClass` :
 ```mermaid
 flowchart TD
     subgraph Setup ["1. Initialisation (Configuration)"]
+        direction TB
         A["<b>Décorateurs (@CsvColumn)</b><br/>Enregistre les métadonnées sur la classe"] --> B
         B["<b>streamReaderWithClass()</b><br/>Compile le schéma et met en cache les index"]
     end
 
     subgraph Streaming ["2. Lecture du Flux (Chunking)"]
+        direction TB
         C["<b>Nettoyage</b><br/>Retrait des BOM UTF-8"] --> D
         D["<b>Machine à états (O(n))</b><br/>Sépare le texte en tableau de chaînes brutes"]
     end
 
     subgraph Row ["3. Traitement de la ligne (Par itération)"]
+        direction TB
         E["<b>1. Validation globale</b><br/>Vérification du nombre strict de colonnes"] --> F
         F["<b>2. validateCell()</b><br/>Appel de la fonction de validation personnalisée"] --> G
         G["<b>3. Instanciation</b><br/>Création du DTO (<i>new Class()</i>)"] --> H
