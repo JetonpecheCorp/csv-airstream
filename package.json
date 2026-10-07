@@ -1,9 +1,9 @@
 {
   "name": "@jetonpeche/csv-airstream",
-  "version": "1.1.2",
+  "version": "1.5.0",
   "type": "module",
   "author": "jetonpeche",
-  "description": "Ultra-lightweight, zero-dependency streaming CSV reader & writer based on Web Streams with resilient Result pattern",
+  "description": "Zero-dependency, memory-safe CSV streaming parser & writer using Web Streams. Features TypeScript DTO decorators and a resilient Result pattern.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -26,13 +26,16 @@
     "csv-parser",
     "csv-writer",
     "csv-stream",
-    "streaming-csv",
-    "fast-csv",
-    "airstream",
-    "stream",
+    "streaming",
     "web-streams",
-    "fsm",
-    "parser"
+    "typescript",
+    "decorators",
+    "dto",
+    "isomorphic",
+    "zero-dependency",
+    "edge",
+    "deno",
+    "bun"
   ],
   "license": "MIT",
   "repository": {
