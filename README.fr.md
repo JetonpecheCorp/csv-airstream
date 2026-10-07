@@ -252,6 +252,41 @@ async function runInventoryPipeline()
 runInventoryPipeline();
 ```
 
+## Utilisation dans le navigateur (Frontend)
+Lisez des fichiers géants directement depuis le navigateur de l'utilisateur sans faire planter l'onglet, grâce à l'API native `File.stream()` :
+```js
+document.getElementById('csvFileInput').addEventListener('change', async (event) => 
+{
+    const file = event.target.files[0];
+    if (!file) 
+        return;
+
+    // file.stream() retourne un ReadableStream natif, parfait pour csv-airstream !
+    for await (const row of Csv.streamReader(file.stream(), { hasHeader: true })) 
+    {
+        if (row.ok)
+            console.log("Ligne lue :", row.data);
+    }
+});
+```
+
+## Gestion des erreurs
+```ts
+try 
+{
+    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
+    {
+        if (row.ok) 
+            console.log(row.data);
+    }
+} 
+catch (error) 
+{
+    // Intercepte les erreurs critiques du flux (ex: fichier introuvable, coupure réseau)
+    console.error("Le flux a été interrompu :", error);
+}
+```
+
 ## Export de Fichiers & Web
 
 ### Sauvegarder sur le disque (Node.js)
