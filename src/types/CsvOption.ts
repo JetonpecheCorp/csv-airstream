@@ -9,7 +9,10 @@ export interface CellValidationContext
     line: number;
     /** 0-based column index of the cell. */
     columnIndex: number;
-    /** Header name corresponding to the column, present when `hasHeader` is enabled. */
+
+    /** 
+     * Header name corresponding to the column, available if `hasHeader` is enabled. 
+     */
     columnName?: string;
 }
 
@@ -31,7 +34,9 @@ export type CellValidatorFn = (
 export interface CsvReaderOptions<T = any>
 {
     /**
-     * Field delimiter character or `'auto'` to infer it from the first rows (default: `','`).
+     * The character used to separate columns. 
+     * Set to `"auto"` and the parser will try to guess it for you!
+     * @default ","
      */
     delimiter?: string | "auto";
 
@@ -51,17 +56,22 @@ export interface CsvReaderOptions<T = any>
     escapeChar?: string;
 
     /**
-     * When true, treats the first line as column headers and emits objects instead of arrays (default: `false`).
+     * Does your file have a first row with column names like "Name, Age, Email"?
+     * Set this to `true` to get objects instead of arrays.
+     * @default false
      */
     hasHeader?: boolean;
 
     /**
-     * Strips leading and trailing whitespace from cell values (default: `false`).
+     * Automatically removes extra spaces at the beginning and end of text.
+     * E.g., `"  hello  "` becomes `"hello"`.
+     * @default false
      */
     trim?: boolean;
 
     /**
-     * Rejects rows whose column count does not match the header or first line (default: `true`).
+     * Rejects rows whose column count does not strictly match the header length or the first parsed row.
+     * @default true
      */
     strictColumnCount?: boolean;
 
@@ -133,24 +143,10 @@ export interface CsvReaderOptions<T = any>
     booleanTruthyValues?: string[];
 
     /**
-     * Optional class constructor used to instantiate rows instead of returning plain object literals.
-     *
-     * When provided (or when using `Csv.streamReaderWithClass`), each emitted row is instantiated 
-     * via `new targetClass()` before properties are populated, preserving class methods, getters, 
-     * and prototype inheritance chains.
-     *
-     * @example
-     * ```ts
-     * class User {
-     *   name!: string;
-     *   get upperName() { return this.name.toUpperCase(); }
-     * }
-     *
-     * for await (const row of Csv.streamReader(stream, { targetClass: User })) 
-     * {
-     *   if (row.ok) console.log(row.data.upperName);
-     * }
-     * ```
+     * Use a specific TypeScript class to create the rows.
+     * 
+     * **Important:** Your class must be easy to create without arguments (e.g., `new MyClass()`).
+     * If the class needs special arguments, the reader will safely report an error on that row failure (`DTO_INSTANTIATION_ERROR`).
      */
     targetClass?: new () => T;
 }
@@ -161,12 +157,13 @@ export interface CsvReaderOptions<T = any>
 export interface CsvWriterOptions<T = any>
 {
     /**
-     * Column delimiter string (default: `','`).
+     * If true, forces double quotes around every single cell value, regardless of its content.
+     * @default false
      */
     delimiter?: string;
 
     /**
-     * Quote character wrapping cells with special characters (default: `'"'`).
+     * Pre-formatted column headers emitted as the very first CSV line.
      */
     quoteChar?: string;
 
@@ -191,40 +188,18 @@ export interface CsvWriterOptions<T = any>
     propertyKeys?: string[];
 
     /**
-     * Explicit column sequence used for row serialization.
-     *
-     * Defines the exact horizontal layout of fields in the generated CSV output.
-     * Columns omitted from this list will be excluded from the serialized stream.
-     *
-     * When used with a decorated DTO model (`Csv.streamWriterWithClass`), this configuration
-     * takes precedence over both natural property declaration order and static `{ order: number }`
-     * settings declared on `@CsvColumn` decorators.
-     *
-     * @example
-     * ```ts
-     * // Exports only 'email' followed by 'id', ignoring DTO declaration order
-     * const writer = Csv.streamWriterWithClass(UserDto, {
-     *   columnsOrder: ["email", "id"],
-     * });
-     * ```
+     * Choose exactly which columns to export and in what order.
+     * Anything not in this list will be ignored.
+     * 
+     * @example ["email", "age", "firstName"]
      */
     columnsOrder?: (keyof T | string)[];
 
     /**
-     * Prepends the UTF-8 Byte Order Mark (`\uFEFF`) sequence at the very beginning of the stream.
-     *
-     * Crucial when exporting CSV files intended to be opened directly in Microsoft Excel on Windows, 
-     * preventing special or accented characters (e.g. `é`, `à`, `ç`, `€`) from displaying as corrupted glyphs.
-     *
+     * **Crucial for Windows/Excel users!**
+     * Set this to `true` if your data contains accents (é, à, ç, etc.). 
+     * It adds a tiny invisible marker (BOM) at the start of the file so Microsoft Excel reads it correctly.
      * @default false
-     *
-     * @example
-     * ```ts
-     * const writer = Csv.streamWriter({
-     *   headers: ["Name", "City"],
-     *   writeBom: true
-     * });
-     * ```
      */
     writeBom?: boolean;
 }

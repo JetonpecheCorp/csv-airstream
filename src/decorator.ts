@@ -1,14 +1,14 @@
 ((Symbol as any).metadata ??= Symbol.for("Symbol.metadata"));
 
 /**
- * Supported primitives for automated string-to-value casting.
+ * Supported primitives for automated string-to-value casting during CSV parsing.
  */
 export type ColumnType = "string" | "number" | "boolean" | "date";
 
 /**
  * Custom transformation function converting a raw string cell into a typed domain value.
  *
- * @template T Return type of the parsed value.
+ * @template T Target type of the parsed value.
  */
 export type TransformFn<T = any> = (value: string) => T;
 
@@ -47,61 +47,27 @@ export interface ColumnMeta
 export interface CsvColumnOptions 
 {
     /** 
-     * Statically declares this field as mandatory on the model schema.
-     * Rows with empty or missing values for this column will automatically be rejected.
-     * 
-     * Note: When using `Csv.streamReaderWithClass()`, these fields are automatically registered alongside 
-     * any runtime `requiredColumns` passed in options.
+     * Statically declares this field as mandatory.
+     * Rows with empty or missing values for this column will automatically trigger a validation error (`MISSING_REQUIRED_COLUMN`).
      */
     required?: boolean;
 
     /** 
-     * Explicit column output priority used exclusively when serializing data via `Csv.streamWriterWithClass()`.
+     * Explicit column output priority used exclusively when writing data (`Csv.streamWriterWithClass`).
      * 
-     * - **Writing (`Csv.streamWriterWithClass`)**: Dictates the exact horizontal position of the column 
-     *   in the generated CSV header and subsequent data rows (e.g., `0` is the 1st column, `1` is the 2nd).
-     *   Columns without an explicit `order` fallback to their natural class declaration sequence.
-     * - **Reading (`Csv.streamReaderWithClass`)**: Has **no impact** during parsing; column positions are resolved 
-     *   dynamically from the incoming CSV header layout.
-     * 
-     * @example
-     * ```ts
-     * class UserDto {
-     *   // Will be written as column index 1 even if declared first in the class
-     *   @CsvColumn("name", { order: 1 })
-     *   name!: string;
-     * 
-     *   // Will be written as column index 0 (first column)
-     *   @CsvColumn("id", { order: 0 })
-     *   id!: string;
-     * }
-     * ```
+     * - Dictates the exact horizontal position (e.g., `0` is the first column).
+     * - Has **no impact** during parsing (`Csv.streamReaderWithClass`), as reading maps dynamically to the source header.
      */
     order?: number;
 
     /**
-     * Target primitive type for automated value conversion (`"number"`, `"boolean"`, `"date"`).
-     * Shortcut for common built-in transformers without writing custom parsing logic.
+     * Target primitive type for automated value conversion.
+     * Automatically casts raw CSV strings to Numbers, Booleans, or Dates safely.
      */
     type?: ColumnType;
 
     /**
-     * Static, model-level value converter applied whenever a cell for this property is parsed.
-     *
-     * - **Scope**: Bound directly to the DTO class definition. Applies to all parsing pipelines 
-     *   using this model across the entire application.
-     * - **Precedence**: Overridden at runtime if a transformer for the same property key 
-     *   is explicitly passed via `options.transformers` in `Csv.streamReaderWithClass()`.
-     *
-     * @example
-     * ```ts
-     * class ProductDto 
-     * {
-     *   // Splits pipe-separated values into a typed array directly on the model
-     *   @CsvColumn("tags", { transform: (raw) => raw.split("|").map(t => t.trim()) })
-     *   tags!: string[];
-     * }
-     * ```
+     * Static, model-level custom value converter applied whenever a cell for this property is parsed.
      */
     transform?: TransformFn;
 
@@ -234,24 +200,24 @@ function resolveTransformer(
 }
 
 /**
- * Binds a class property to an explicit CSV header string with optional writing order.
- * Compatible with TypeScript experimental decorators and standard TC39 Stage 3 decorators.
+ * Links a class property to a specific column name in your CSV file.
+ * This is the easiest way to read and write CSVs with TypeScript.
  *
  * @example
  * ```ts
- * class UserDto {
- *   // Automatically enforced as required without needing options.requiredColumns
- *   @CsvColumn("name *", { required: true, order: 0 })
+ * class Employee {
+ *   // Looks for the exact column "Full Name" in the file
+ *   @CsvColumn("Full Name", { required: true })
  *   name!: string;
- *
- *   @CsvColumn("is active (0, 1) *", { order: 1 })
- *   isActive!: string;
+ * 
+ *   // Automatically turns the text "true", "1", or "yes" into a boolean
+ *   @CsvColumn("Is Active", { type: "boolean" })
+ *   isActive!: boolean;
  * }
  * ```
  *
- * @param header The raw header string expected in the CSV source.
- * @param options Additional schema settings (`required` validation and `order`).
- * @returns A property decorator handler.
+ * @param header The exact column name in the CSV file (e.g., "Email Address").
+ * @param options Extra settings (like making the field required, or converting types).
  */
 export function CsvColumn(header: string, options?: CsvColumnOptions): any 
 {
@@ -265,23 +231,18 @@ export function CsvColumn(header: string, options?: CsvColumnOptions): any
 }
 
 /**
- * Binds a class property directly to a zero-based column position index.
- * Useful for headerless CSV files or fixed positional records.
+ * Links a class property to a column position (0, 1, 2...) instead of a name.
+ * Use this when your CSV file does NOT have a header row.
  *
  * @example
  * ```ts
- * class LogDto {
- *   @CsvIndex(0, { required: true })
- *   timestamp!: string;
- *
- *   @CsvIndex(1)
- *   level!: string;
+ * class LogLine {
+ *   @CsvIndex(0, { type: "date" }) timestamp!: Date; // First column
+ *   @CsvIndex(1) message!: string;                   // Second column
  * }
  * ```
  *
- * @param index 0-based column index in the CSV line.
- * @param options Additional settings such as `required`.
- * @returns A property decorator handler.
+ * @param index The column number (starting at 0 for the first column).
  */
 export function CsvIndex(
     index: number,

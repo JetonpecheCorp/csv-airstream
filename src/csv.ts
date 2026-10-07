@@ -5,33 +5,44 @@ import type { CsvRowResult } from "./types/CsvRowResult.js";
 import { ClassConstructor, getCsvSchema, CSV_SCHEMA_KEY } from "./decorator.js";
 
 /**
- * Main entry point for stream-based CSV parsing and serialization.
+ * Main entry point for reading and writing CSV files.
+ * Works everywhere: Node.js, web browsers, and edge workers (like Cloudflare).
  */
 export class Csv
 {
     /**
-     * Streams and parses a CSV source directly into typed instances of a decorated DTO class.
+     * Reads a CSV file and magically turns each row into a real TypeScript object.
      * 
      * Features:
-     * - Automatic header activation (`hasHeader: true`) if `@CsvColumn` is detected.
-     * - Immediate rejection (`MISSING_HEADER_COLUMN`) if mandatory columns are missing from the header row.
-     * - Zero-overhead O(1) indexed lookups with automatic primitive type conversion.
-     * - Merges static `{ required: true }` decorators with runtime `options.requiredColumns` without overrides.
+     * - Automatically uses the first row as headers if your class uses `@CsvColumn`.
+     * - Automatically converts text to Numbers, Booleans, or Dates.
+     * - Handles huge files without crashing your app.
      *
      * @example
      * ```ts
-     * for await (const row of Csv.streamReaderWithClass(csvStream, UserDto)) {
+     * // 1. Create your model
+     * class User {
+     *   @CsvColumn("Full Name") name!: string;
+     *   @CsvColumn("Age", { type: "number" }) age!: number;
+     * }
+     * 
+     * // 2. Read the file
+     * const stream = fs.createReadStream("users.csv");
+     * 
+     * for await (const row of Csv.streamReaderWithClass(stream, User)) {
      *   if (row.ok) {
-     *     console.log(row.data.name, row.data.price);
+     *     // row.data is a real 'User' object!
+     *     console.log(`Hello ${row.data.name}, you are ${row.data.age}`);
+     *   } else {
+     *     console.error(`Error on line ${row.line}: ${row.error.message}`);
      *   }
      * }
      * ```
      *
-     * @template T The decorated target DTO class.
-     * @param source Raw CSV string, text stream, or binary byte stream (`Uint8Array`).
-     * @param dtoClass Class constructor decorated with `@CsvColumn` or `@CsvIndex`.
-     * @param options Additional parser configuration.
-     * @returns An async iterable yielding parsed `CsvRowResult<T>` records.
+     * @template T The TypeScript class you want to use.
+     * @param source The CSV text, or a stream of data (text or binary).
+     * @param dtoClass Your class (must have a simple `constructor()` with no required arguments).
+     * @param options Extra settings (like changing the delimiter).
      */
     public static streamReaderWithClass<T extends object>(
         source: string | ReadableStream<string> | ReadableStream<Uint8Array>,
@@ -95,24 +106,29 @@ export class Csv
     }
 
     /**
-     * Creates an optimized CSV stream writer pre-configured for a decorated DTO class.
+     * Creates a CSV file directly from your TypeScript objects.
      * 
-     * Column sequencing is resolved using the following order of precedence:
-     * 1. Dynamic `options.columnsOrder` if specified.
-     * 2. Static `{ order: number }` declared on `@CsvColumn` decorators.
-     * 3. Natural property declaration order on the class prototype.
-     *
      * @example
      * ```ts
-     * const writer = Csv.streamWriterWithClass(UserDto);
-     * await writer.write({ name: "Alice", price: 42 });
+     * class Product {
+     *   @CsvColumn("Title") title!: string;
+     *   @CsvColumn("Price", { type: "number" }) price!: number;
+     * }
+     * 
+     * // 1. Create the writer
+     * const writer = Csv.streamWriterWithClass(Product, { writeBom: true });
+     * 
+     * // 2. Save it to a file
+     * const saveTask = Csv.saveToFile(writer, "products.csv");
+     * 
+     * // 3. Write your data
+     * await writer.write({ title: "Laptop", price: 999 });
+     * await writer.write({ title: "Mouse", price: 25 });
+     * 
+     * // 4. Close and wait for the file to be saved
      * await writer.close();
+     * await saveTask;
      * ```
-     *
-     * @template T The decorated target DTO class.
-     * @param dtoClass Class constructor decorated with `@CsvColumn`.
-     * @param options Writer settings, including custom column sequences.
-     * @returns A typed writer handle exposing `write`, `close`, `abort`, and `readable`.
      */
     public static streamWriterWithClass<T extends object>(
         dtoClass: ClassConstructor<T>,
@@ -151,19 +167,20 @@ export class Csv
     }
 
     /**
-     * Streams and parses untyped raw CSV data row-by-row as an async iterable.
+     * Reads a raw CSV file row by row. 
+     * Use this if you want something quick and don't want to use TypeScript classes (`@CsvColumn`).
      *
      * @example
      * ```ts
-     * for await (const row of Csv.streamReader(csvData, { delimiter: "auto", hasHeader: true })) {
-     *   if (row.ok) console.log(row.data);
+     * // Reading a simple file with headers (Name,Age)
+     * const stream = fs.createReadStream("data.csv");
+     * 
+     * for await (const row of Csv.streamReader(stream, { hasHeader: true })) {
+     *   if (row.ok) {
+     *     console.log(row.data["Name"], row.data["Age"]);
+     *   }
      * }
      * ```
-     *
-     * @template T Emitted row shape, defaults to `Record<string, string>`.
-     * @param source Raw CSV string, text stream, or binary byte stream (`Uint8Array`).
-     * @param options Parser configuration options.
-     * @returns An async iterable yielding `CsvRowResult<T>` records[cite: 13, 15].
      */
     public static streamReader<T = Record<string, string>>(
         source: string | ReadableStream<string> | ReadableStream<Uint8Array>,
@@ -226,18 +243,18 @@ export class Csv
     }
 
     /**
-     * Creates a lightweight streaming writer handle supporting raw row serialization.
+     * Writes raw arrays or simple objects into a CSV file.
+     * Great for simple, quick exports.
      *
      * @example
      * ```ts
-     * const writer = Csv.streamWriter({ headers: ["id", "name"] });
-     * await writer.write({ id: 1, name: "Product" });
+     * const writer = Csv.streamWriter({ headers: ["id", "status"] });
+     * 
+     * await writer.write({ id: 1, status: "active" });
+     * await writer.write({ id: 2, status: "pending" });
+     * 
      * await writer.close();
      * ```
-     *
-     * @template T Array or object input shape.
-     * @param options Writer formatting options.
-     * @returns An object containing `write`, `close`, `abort`, and the output `readable` stream.
      */
     public static streamWriter<T extends RowInput = RowInput>(
         options: CsvWriterOptions = {}
@@ -268,18 +285,20 @@ export class Csv
     }
 
     /**
-     * Wraps a CSV writer's readable stream into a standard Web API `Response` configured for file downloads.
-     * Compatible with Next.js, Hono, Fastify, Cloudflare Workers, Express v5, Deno, and Bun.
+     * A handy helper for web servers (like Next.js, Express, or Cloudflare).
+     * It turns your CSV writer into a downloadable file for the user's browser.
      *
      * @example
      * ```ts
+     * // Inside a Next.js route or Hono handler:
      * const writer = Csv.streamWriter({ headers: ["id", "name"] });
-     * return Csv.toResponse(writer, "export.csv");
+     * 
+     * // Start writing data in the background
+     * writer.write({ id: 1, name: "Alice" }).then(() => writer.close());
+     * 
+     * // Send the download to the user immediately
+     * return Csv.toResponse(writer, "users.csv");
      * ```
-     *
-     * @param writer Writer handle or object exposing a readable string stream.
-     * @param filename Target filename specified in the Content-Disposition header (defaults to `"export.csv"`).
-     * @returns A standard Web `Response` streaming UTF-8 encoded CSV data.
      */
     public static toResponse(
         writer: { readable: ReadableStream<string> },
@@ -298,22 +317,13 @@ export class Csv
     }
 
     /**
-     * Pipes a CSV writer's output directly into a local file on disk using Node.js filesystem streams.
-     * Uses dynamic imports to maintain zero hard dependencies and safe execution in browser contexts.
+     * A handy helper for Node.js scripts. 
+     * It saves everything you write directly to your computer's hard drive.
      *
-     * @example
-     * ```ts
-     * const writer = Csv.streamWriter({ headers: ["id", "price"] });
-     * const savePromise = Csv.saveToFile(writer, "./exports/prices.csv");
-     *
-     * await writer.write({ id: 1, price: 49.99 });
-     * await writer.close();
-     * await savePromise;
-     * ```
-     *
-     * @param writer Writer handle or object exposing a readable string stream.
-     * @param filePath Absolute or relative path to the destination file.
-     * @returns A Promise that resolves once all stream contents are flushed to disk.
+     * @param writer The CSV writer you created.
+     * @param filePath Where to save the file (e.g., `"./exports/my-data.csv"`).
+    * @returns A Promise that resolves once all stream contents are successfully flushed to disk.
+     * @throws {Error} If file writing fails (e.g., missing permissions or locked file).
      */
     public static async saveToFile(
         writer: { readable: ReadableStream<string> },
