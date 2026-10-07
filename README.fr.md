@@ -22,10 +22,21 @@ Conçue pour traiter des volumes massifs de données sur Node.js, Deno, Bun et l
 > **NOTE pour les pros (Performances & Mémoire)** :
 `csv-airstream` ne met jamais l'intégralité du fichier en mémoire tampon. De plus, le mapping des colonnes (Schema Resolution) n'est calculé qu'une seule fois au démarrage. Ensuite, chaque ligne lue ou écrite utilise des accès par indexation en O(1) (Zéro Overhead), garantissant une vitesse fulgurante même sur des fichiers de plusieurs gigaoctets.
 
-## Installation
-```bash
-npm install @jetonpeche/csv-airstream
-```
+## Sommaire
+
+- [Pourquoi choisir csv-airstream ?](#pourquoi-choisir-csv-airstream-)
+- [Architecture & Cycle de vie](#architecture--cycle-de-vie-lifecycle)
+- [Installation](#installation)
+- [Démarrage Rapide](#démarrage-rapide)
+  - [1. Mapping Facile avec des Classes (DTO)](#mapping-facile-avec-des-classes-dto)
+  - [2. Fichiers sans En-tête avec @CsvIndex](#fichiers-sans-en-tête-headerless-avec-csvindex)
+  - [3. Lecture brute (Sans Typage)](#lecture-brute-sans-typage)
+  - [4. Transformations Personnalisées](#transformations-personnalisées-custom-transforms)
+  - [5. Utilisation dans le navigateur (Frontend)](#utilisation-dans-le-navigateur-frontend)
+  - [6. Gestion des erreurs](#gestion-des-erreurs)
+- [Exemple Complet : Nettoyage de données](#exemple-complet--nettoyage-de-données)
+- [Export de Fichiers & Web](#export-de-fichiers--web)
+- [Référence de l'API](#référence-de-lapi)
 
 ## Architecture & Cycle de vie (Lifecycle)
 Afin de garantir des performances optimales et une empreinte mémoire minimale, `csv-airstream` sépare strictement la phase de configuration de la phase de traitement par flux.  
@@ -60,6 +71,11 @@ flowchart TD
 - Les décorateurs sont lus une seule fois au démarrage. Les fonctions `transform` sont mises en cache.
 - `validateCell` est toujours appelée avant l'instanciation de la classe et avant la transformation. Elle reçoit toujours la valeur brute (chaîne de caractères).
 - `transform` n'est exécutée que si la cellule a passé l'étape de validation avec succès. Le résultat est directement injecté dans la nouvelle instance du DTO.
+
+## Installation
+```bash
+npm install @jetonpeche/csv-airstream
+```
 
 ## Démarrage Rapide
 
@@ -173,6 +189,41 @@ for await (const row of Csv.streamReaderWithClass(csvData, ProductDto))
 
 > Astuce : Vous pouvez aussi surcharger ces transformations au moment de l'exécution (sans modifier la classe) en passant l'option `transformers: new Map(...)` dans `Csv.streamReaderWithClass()`.
 
+### Utilisation dans le navigateur (Frontend)
+Lisez des fichiers géants directement depuis le navigateur de l'utilisateur sans faire planter l'onglet, grâce à l'API native `File.stream()` :
+```js
+document.getElementById('csvFileInput').addEventListener('change', async (event) => 
+{
+    const file = event.target.files[0];
+    if (!file) 
+        return;
+
+    // file.stream() retourne un ReadableStream natif, parfait pour csv-airstream !
+    for await (const row of Csv.streamReader(file.stream(), { hasHeader: true })) 
+    {
+        if (row.ok)
+            console.log("Ligne lue :", row.data);
+    }
+});
+```
+
+### Gestion des erreurs
+```ts
+try 
+{
+    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
+    {
+        if (row.ok) 
+            console.log(row.data);
+    }
+} 
+catch (error) 
+{
+    // Intercepte les erreurs critiques du flux (ex: fichier introuvable, coupure réseau)
+    console.error("Le flux a été interrompu :", error);
+}
+```
+
 ## Exemple Complet : Nettoyage de données
 Voici un scénario réaliste : un fichier d'inventaire arrive très mal formaté (commentaires, séparateurs aléatoires, valeurs incorrectes). Nous allons le lire, le valider, et réécrire un fichier propre sur le disque dur.
 
@@ -252,41 +303,6 @@ async function runInventoryPipeline()
 runInventoryPipeline();
 ```
 
-## Utilisation dans le navigateur (Frontend)
-Lisez des fichiers géants directement depuis le navigateur de l'utilisateur sans faire planter l'onglet, grâce à l'API native `File.stream()` :
-```js
-document.getElementById('csvFileInput').addEventListener('change', async (event) => 
-{
-    const file = event.target.files[0];
-    if (!file) 
-        return;
-
-    // file.stream() retourne un ReadableStream natif, parfait pour csv-airstream !
-    for await (const row of Csv.streamReader(file.stream(), { hasHeader: true })) 
-    {
-        if (row.ok)
-            console.log("Ligne lue :", row.data);
-    }
-});
-```
-
-## Gestion des erreurs
-```ts
-try 
-{
-    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
-    {
-        if (row.ok) 
-            console.log(row.data);
-    }
-} 
-catch (error) 
-{
-    // Intercepte les erreurs critiques du flux (ex: fichier introuvable, coupure réseau)
-    console.error("Le flux a été interrompu :", error);
-}
-```
-
 ## Export de Fichiers & Web
 
 ### Sauvegarder sur le disque (Node.js)
@@ -351,15 +367,26 @@ export async function GET()
 ### Décorateurs
 `@CsvColumn(header, options?)`: Lie une propriété à un texte d'en-tête.
 
-* `header` *(string)* : Le nom de la colonne dans le CSV source.
-* `options.required` *(boolean)* : Si `true`, rejette la ligne si la cellule est vide.
-* `options.order`*(number)*: L'ordre d'affichage de la colonne lors de l'export (ex: 0, 1, 2).
-* `options.type`*("`string" \| "number" \| "boolean" \| "date"`)*:  Conversion automatique des valeurs primitives.
-* `options.transform` *`(value: string) => any`*: Fonction de conversion personnalisée exécutée à chaque cellule.
+| Paramètre |Type | Description |
+|:--- |:--- |:--- |
+| `header` | `string` | Le nom de la colonne dans le CSV source. |
+| `options.required` | `boolean` | Si `true`, rejette la ligne si la cellule est vide. |
+| `options.order` | `number` | L'ordre d'affichage de la colonne lors de l'export (ex: 0, 1, 2). |
+| `options.type` | `string" \| "number" \| "boolean" \| "date"` | Conversion automatique des valeurs primitives. |
+| `options.transform` | `(value: string) => any` | Fonction de conversion personnalisée exécutée à chaque cellule. |
+| `options.booleanValues` | `BooleanCastOptions` | Donne une liste de valeur pour determiné une valeur `true` et une valeur `false`. |
+| `options.numberOptions` | `NumberCastOptions` | Config. des nombres, ex: `{ decimalSeparator: ",", strict: true }` |
 
 `@CsvIndex(index, options?)`: Lie une propriété à une position numérique.   
-* `index` *(number)* : La position de la colonne (commence à 0).   
-* `options.required` *(boolean)* : Si `true`, rejette la ligne si la cellule est vide. 
+
+| Paramètre |Type | Description |
+|:--- |:--- |:--- |
+| `index` | `number` | La position de la colonne (commence à 0). |
+| `options.required` | `boolean` | Si `true`, rejette la ligne si la cellule est vide. |
+| `options.type` | `string" \| "number" \| "boolean" \| "date"` | Conversion automatique des valeurs primitives. |
+| `options.transform` | `(value: string) => any` | Fonction de conversion personnalisée exécutée à chaque cellule. |
+| `options.booleanValues` | `BooleanCastOptions` | Donne une liste de valeur pour determiné une valeur `true` et une valeur `false`. |
+| `options.numberOptions` | `NumberCastOptions` | Config. des nombres, ex: `{ decimalSeparator: ",", strict: true }` |
 
 ### Les Méthodes Typées (DTO)
 `Csv.streamReaderWithClass(source, dtoClass, options?)`  
@@ -376,6 +403,30 @@ Crée un flux d'écriture configuré par votre classe.
 ### Les Utilitaires d'Export
 * `Csv.saveToFile(writer, filePath)` : Sauvegarde votre flux directement sur le disque (idéal pour Node/Bun/Deno).
 * `Csv.toResponse(writer, filename)` : Convertit le flux en téléchargement pour navigateur (idéal pour les APIs).
+
+### Options de Lecture (CsvReaderOptions)
+
+| Option | Type | Défaut | Description |
+|:--- |:--- |:--- |:--- |
+| `delimiter` | `"string \| "auto"` | `","` | Le caractère de séparation. `"auto"` détecte automatiquement le séparateur. |
+| `hasHeader` | `boolean` | `false` | Si `true`, utilise la première ligne comme clés d'objet au lieu de retourner un tableau. (Activé par défaut avec les décorateurs). |
+| `trim` | `boolean` | `false` | Supprime les espaces vides au début et à la fin des valeurs textuelles. |
+| `strictColumnCount` | `boolean` | `true` | Rejette les lignes dont le nombre de colonnes ne correspond pas à l'en-tête. |
+| `validateCell` | `Function` | `undefined` | `Callback (valeur, contexte) => boolean \| string` pour valider chaque cellule à la volée. |
+| `skipEmptyLines` | `boolean` | `false` | Ignore les lignes totalement vides ou ne contenant que des séparateurs. |
+| `comment` | `string` | `undefined` | Ignore les lignes commençant par ce préfixe (ex: `"#"`). |
+| `targetClass` | `Class` | `undefined` | Instancie chaque ligne avec cette classe (nécessite un constructeur sans paramètre). |
+
+### Options d'Écriture (CsvWriterOptions)
+
+| Option | Type | Défaut | Description |
+|:--- |:--- |:--- |:--- |
+| `delimiter` | `string` | `","` | Le caractère de séparation entre les colonnes. |
+| `writeBom` | `boolean` | `false` | Ajoute le marqueur UTF-8 (BOM) au début du fichier. Indispensable pour Excel sous Windows. |
+| `columnsOrder` | `string[]` | `undefined` | Force un ordre spécifique des colonnes à l'export, ignorant l'ordre de la classe. |
+| `alwaysQuote` | `boolean` | `false` | Force l'encadrement par des guillemets pour toutes les cellules. |
+| `quoteChar` | `string` | `'"'` | Le caractère utilisé pour encadrer les cellules contenant des caractères spéciaux. |
+| `lineTerminator` | `"\r\n" \| "\n"` | `"\r\n"` | Le saut de ligne ajouté à la fin de chaque enregistrement. |
 
 ## License
 MIT

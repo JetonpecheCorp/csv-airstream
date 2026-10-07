@@ -22,6 +22,21 @@ Designed to process massive volumes of data on Node.js, Deno, Bun, and modern br
 > **NOTE for Pros (Performance & Memory)**:
 `csv-airstream` never buffers the entire file in memory. Furthermore, column mapping (Schema Resolution) is calculated only once at startup. Subsequently, every line read or written uses O(1) index-based access (zero overhead), ensuring blazing-fast speeds even with multi-gigabyte files.
 
+## 📑 Table of Contents
+
+- [Features](#why-choose-csv-airstream-)
+- [Installation](#setup)
+- [Architecture & Lifecycle](#architecture--lifecycle)
+- [Quick Start](#quick-start)
+  - [1. Class DTO Mapping](#easy-mapping-with-classes-dto)
+  - [2. Headerless CSVs with @CsvIndex](#headerless-files-with-csvindex)
+  - [3. Low-Level Untyped Streams](#raw-read-untyped)
+  - [4. Custom Data Transformations](#custom-data-transformations)
+  - [5. Browser Usage (Frontend)](#browser-usage-frontend)
+- [Comprehensive Example](#complete-example-data-cleaning)
+- [File Export & Web Downloads](#file-export--web)
+- [API Reference](#api-references)
+
 ## Setup
 ```bash
 npm install @jetonpeche/csv-airstream
@@ -173,6 +188,41 @@ for await (const row of Csv.streamReaderWithClass(csvData, ProductDto))
 
 > **Tip**: You can also override these transformers at runtime (without changing the class) by passing the `transformers: new Map(...)` option into `Csv.streamReaderWithClass()`.
 
+### Browser usage (Frontend)
+Read huge files directly from the user's browser without crashing the tab, thanks to the native `File.stream()` API:
+```js
+document.getElementById('csvFileInput').addEventListener('change', async (event) => 
+{
+    const file = event.target.files[0];
+    if (!file) 
+        return;
+
+    // file.stream() returns a native ReadableStream, perfect for csv-airstream !
+    for await (const row of Csv.streamReader(file.stream(), { hasHeader: true })) 
+    {
+        if (row.ok)
+            console.log("Ligne lue :", row.data);
+    }
+});
+```
+
+### Error handling
+```ts
+try 
+{
+    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
+    {
+        if (row.ok) 
+            console.log(row.data);
+    }
+} 
+catch (error) 
+{
+    // Intercepts critical stream errors (e.g., file not found, network outage)
+    console.error("The stream has been interrupted:", error);
+}
+```
+
 ## Complete Example: Data Cleaning
 Here is a realistic scenario: an inventory file arrives in a very poorly formatted state (comments, random separators, incorrect values). We will read it, validate it, and write a clean file back to the hard drive.
 
@@ -252,41 +302,6 @@ async function runInventoryPipeline()
 runInventoryPipeline();
 ```
 
-## Browser usage (Frontend)
-Read huge files directly from the user's browser without crashing the tab, thanks to the native `File.stream()` API:
-```js
-document.getElementById('csvFileInput').addEventListener('change', async (event) => 
-{
-    const file = event.target.files[0];
-    if (!file) 
-        return;
-
-    // file.stream() returns a native ReadableStream, perfect for csv-airstream !
-    for await (const row of Csv.streamReader(file.stream(), { hasHeader: true })) 
-    {
-        if (row.ok)
-            console.log("Ligne lue :", row.data);
-    }
-});
-```
-
-## Gestion des erreurs
-```ts
-try 
-{
-    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
-    {
-        if (row.ok) 
-            console.log(row.data);
-    }
-} 
-catch (error) 
-{
-    // Intercepts critical stream errors (e.g., file not found, network outage)
-    console.error("The stream has been interrupted:", error);
-}
-```
-
 ## File Export & Web
 
 ### Save to disk (Node.js)
@@ -349,16 +364,28 @@ export async function GET()
 ## API References
 
 ### Decorators
-`@CsvColumn(header, options?)`: Binds a property to a header text.  
-* `header` *(string)* : The name of the column in the source CSV.
-* `options.required` *(boolean)* : If `true`, rejects the row if the cell is empty.
-* `options.order`*(number)*: The display order of the column during export (e.g., 0, 1, 2).
-* `options.type` *(`"string" \| "number" \| "boolean" \| "date"`)*: Built-in automatic primitive casting.
-*  `options.transform` *(`(value: string) => any`)* : Custom callback converting a raw cell string into a typed value.
+`@CsvColumn(header, options?)`: Maps a property to a header text.
 
-`@CsvIndex(index, options?)`: Binds a property to a numerical position.  
-* `index` *(number)* : The column position (starts at 0).   
-* `options.required` *(boolean)* : If `true`, rejects the row if the cell is empty.
+| Parameter | Type | Description |
+|:--- |:--- |:--- |
+| `header` | `string` | The column name in the source CSV. |
+| `options.required` | `boolean` | If `true`, rejects the row if the cell is empty. |
+| `options.order` | `number` | The column display order during export (e.g., 0, 1, 2). |
+| `options.type` | `"string" \| "number" \| "boolean" \| "date"` | Automatic conversion of primitive values. |
+| `options.transform` | `(value: string) => any` | Custom conversion function executed for each cell. |
+| `options.booleanValues` | `BooleanCastOptions` | Provides a list of values ​​to determine `true` and `false` values. |
+| `options.numberOptions` | `NumberCastOptions` | Number configuration, e.g., `{ decimalSeparator: ",", strict: true }` |
+
+`@CsvIndex(index, options?)`: Maps a property to a numeric position.
+
+| Parameter | Type | Description |
+|:--- |:--- |:--- |
+| `index` | `number` | The column position (starts at 0). |
+| `options.required` | `boolean` | If `true`, rejects the row if the cell is empty. |
+| `options.type` | `"string" \| "number" \| "boolean" \| "date"` | Automatic conversion of primitive values. |
+| `options.transform` | `(value: string) => any` | Custom conversion function executed for each cell. |
+| `options.booleanValues` | `BooleanCastOptions` | Provides a list of values ​​to determine a `true` value and a `false` value. |
+| `options.numberOptions` | `NumberCastOptions` | Number configuration, e.g., `{ decimalSeparator: ",", strict: true }` |
 
 ### Typed Methods (DTOs)
 `Csv.streamReaderWithClass(source, dtoClass, options?)`  
@@ -375,6 +402,30 @@ Creates a writing stream configured by your class.
 ### Export Utilities
 * `Csv.saveToFile(writer, filePath)` : Saves your stream directly to disk (ideal for Node/Bun/Deno).
 * `Csv.toResponse(writer, filename)` : Converts the stream into a browser download (ideal for APIs).
+
+### Reading Options (CsvReaderOptions)
+
+| Option | Type | Default | Description |
+|:--- |:--- |:--- |:--- |
+| `delimiter` | `"string \| "auto"` | `","` | The separator character. `"auto"` automatically detects the separator. |
+| `hasHeader` | `boolean` | `false` | If `true`, uses the first row as object keys instead of returning an array. (Enabled by default with decorators). |
+| `trim` | `boolean` | `false` | Removes whitespace from the beginning and end of text values. |
+| `strictColumnCount` | `boolean` | `true` | Rejects rows where the number of columns does not match the header. |
+| `validateCell` | `Function` | `undefined` | `Callback (value, context) => boolean \| string` to validate each cell on the fly. |
+| `skipEmptyLines` | `boolean` | `false` | Skips rows that are completely empty or contain only separators. |
+| `comment` | `string` | `undefined` | Skips rows starting with this prefix (e.g., `"#"`). |
+| `targetClass` | `Class` | `undefined` | Instantiates each row using this class (requires a parameterless constructor). |
+
+### Writing Options (CsvWriterOptions)
+
+| Option | Type | Default | Description |
+|:--- |:--- |:--- |:--- |
+| `delimiter` | `string` | `","` | The separator character between columns. |
+| `writeBom` | `boolean` | `false` | Adds the UTF-8 marker (BOM) to the beginning of the file. Essential for Excel on Windows. |
+| `columnsOrder` | `string[]` | `undefined` | Forces a specific column order for export, ignoring the class order. |
+| `alwaysQuote` | `boolean` | `false` | Forces Enclose all cells in quotation marks. |
+| `quoteChar` | `string` | `'"'` | The character used to enclose cells containing special characters. |
+| `lineTerminator` | `"\r\n" \| "\n"` | `"\r\n"` | The line break added at the end of each record. |
 
 ## License
 MIT
