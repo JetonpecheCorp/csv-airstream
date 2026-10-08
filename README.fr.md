@@ -37,7 +37,7 @@ Conçue pour traiter des volumes massifs de données sur Node.js, Deno, Bun et l
 - [Exemple Complet : Nettoyage de données](#exemple-complet--nettoyage-de-données)
 - [Export de Fichiers & Web](#export-de-fichiers--web)
 - [Référence de l'API](#référence-de-lapi)
-- [Benchmark & performances](#benchmark--performance)
+- [Benchmark & performances](#benchmark--performances)
 
 ## Architecture & Cycle de vie (Lifecycle)
 Afin de garantir des performances optimales et une empreinte mémoire minimale, `csv-airstream` sépare strictement la phase de configuration de la phase de traitement par flux.  
@@ -434,21 +434,35 @@ Crée un flux d'écriture configuré par votre classe.
 
 ## Benchmark & Performances
 
-`csv-airstream` est conçu pour allier vitesse extrême et sécurité de la mémoire. Voici les résultats d'un test de charge effectué sur Node.js avec un fichier généré localement :
+`csv-airstream` est conçu pour allier vitesse extrême et sécurité de la mémoire. Le tableau ci-dessous démontre la scalabilité linéaire du parseur sur des fichiers de différentes tailles (testé sur Node.js) :
 
-| Fichier traité | Lignes analysées | Temps d'exécution | Vitesse de traitement |
-| :--- | :--- | :--- | :--- |
-| **480.62 Mo** | **5 000 000** | **8.20 s** | **610 128 lignes / sec** |
+| Fichier traité | Lignes analysées | Temps d'exécution | Vitesse de traitement | Empreinte RAM Max |
+| :--- | :--- | :--- | :--- | :--- |
+| **92.73 Mo**| **1 000 000**| **1.76 s**| **568 505 lignes / sec**| **< 20 Mo**|
+| **480.62 Mo** | **5 000 000** | **8.20 s** | **610 128 lignes / sec** | **< 40 Mo** |
+| **965.48 Mo** | **10 000 000**| **17.45 s**| **573 164 lignes / sec**| **< 40 Mo**|
+
+![benchmark](./assets/benchmark.png)
+
+> **Comment ces tests ont-ils été mesurés ?**
+> Les temps d'exécution ont été chronométrés via `Date.now()`. La consommation de la RAM a été mesurée en sondant `process.memoryUsage().heapUsed` toutes les 100 millisecondes pendant que le flux natif lisait le fichier.
 
 **Conditions du test et données analysées :**
-Ce test n'est pas une simple lecture de flux texte. Les 8 secondes mesurées incluent toutes les opérations suivantes traitées à la volée pour les 5 millions de lignes :
-* **Lecture du flux local** (`fs.createReadStream`).
+Ce test n'est pas une simple lecture de texte. Le temps mesuré inclut toutes les opérations suivantes traitées à la volée pour chaque ligne :
+* **Lecture I/O** (`fs.createReadStream`).
 * **Parsing CSV :** Découpage de 7 colonnes par ligne.
-* **Validation structurelle :** Vérification stricte du nombre de colonnes pour chaque ligne.
-* **Mapping et Typage (DTO) :** Instanciation de 5 millions d'objets `UserDto`.
+* **Validation structurelle :** Vérification stricte du nombre de colonnes attendu.
+* **Mapping et Typage (DTO) :** Instanciation des objets `UserDto`.
 * **Casting automatique :** Conversion des chaînes de caractères en types natifs (ex: `"42.5"` -> `Number`, `"true"` -> `Boolean`).
+### Code du Benchmark
+
+Voici le code exact exécuté pour obtenir ces résultats :
 
 ```ts
+import fs from 'node:fs';
+import { Readable } from 'node:stream';
+import { Csv, CsvColumn } from '@jetonpeche/csv-airstream';
+
 class UserDto {
     @CsvColumn("id", { type: "number" }) id!: number;
     @CsvColumn("first_name") firstName!: string;
@@ -458,14 +472,56 @@ class UserDto {
     @CsvColumn("score", { type: "number" }) score!: number;
     @CsvColumn("created_at") createdAt!: string;
 }
+
+async function runBenchmark() 
+{
+    console.log("Lancement du test de charge...");
+    
+    const stats = fs.statSync(FICHIER_CIBLE);
+    const tailleMo = (stats.size / 1024 / 1024).toFixed(2);
+    
+    const memorySnapshots: any[] = [];
+    let rowCount = 0;
+    
+    // Mesure de la mémoire toutes les 100ms
+    const interval = setInterval(() => {
+        const mem = process.memoryUsage();
+        memorySnapshots.push({
+            timeMs: Date.now() - startTime,
+            heapUsedMb: mem.heapUsed / 1024 / 1024
+        });
+    }, 100);
+
+    const startTime = Date.now();
+    
+    const nodeStream = fs.createReadStream(FICHIER_CIBLE);
+    const webStream = Readable.toWeb(nodeStream) as any;
+    
+    for await (const row of Csv.streamReaderWithClass(webStream, UserDto)) 
+    {
+        if (row.ok)
+            rowCount++;
+    }
+
+    const endTime = Date.now();
+    clearInterval(interval);
+    
+    const durationSec = ((endTime - startTime) / 1000).toFixed(2);
+    const rowsPerSec = Math.round(rowCount / (endTime - startTime) * 1000);
+    
+    console.log(`\n Benchmark terminé !`);
+    console.log(`Lignes traitées : ${rowCount.toLocaleString()}`);
+    console.log(`Temps total : ${durationSec} secondes`);
+    console.log(`Vitesse : ${rowsPerSec.toLocaleString()} lignes / seconde`);
+}
+
+runBenchmark();
 ```
 
-![Graphique de l'empreinte mémoire](assets/benchmark.png)
+**Analyse de l'empreinte mémoire :**  
+Le graphique ci-dessus illustre un comportement de flux (stream) parfait. Bien que le fichier atteigne le gigaoctet, l'empreinte mémoire ne s'envole jamais. Le motif en "dents de scie" montre que la mémoire est allouée temporairement (pic régulier sous les 40 Mo) pour créer les objets, puis immédiatement libérée par le Garbage Collector de Node.js.
 
-**Analyse de l'empreinte mémoire :**
-Le graphique ci-dessus illustre un comportement de flux (stream) parfait. Bien que le fichier pèse près de 500 Mo, l'empreinte mémoire ne s'envole jamais. Le motif en "dents de scie" montre que la mémoire est allouée temporairement (pic à ~35 Mo) pour créer les objets, puis immédiatement libérée par le Garbage Collector de Node.js (retour à ~10 Mo). 
-
-**Résultat :** Zéro fuite de mémoire (memory leak) et une protection totale contre les crashs *Out Of Memory*, quelle que soit la taille du fichier.
+**Résultat**: Zéro fuite de mémoire (memory leak) et une protection totale contre les crashs Out Of Memory, quelle que soit la taille du fichier.
 
 ## License
 MIT

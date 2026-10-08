@@ -36,7 +36,7 @@ Designed to process massive volumes of data on Node.js, Deno, Bun, and modern br
 - [Comprehensive Example](#complete-example-data-cleaning)
 - [File Export & Web Downloads](#file-export--web)
 - [API Reference](#api-references)
-- [Benchmark & performances](#benchmark--performances)
+- [Benchmark & performances](#benchmark--performance)
 
 ## Setup
 ```bash
@@ -433,21 +433,35 @@ Creates a writing stream configured by your class.
 
 ## Benchmark & Performance
 
-`csv-airstream` is built to combine extreme speed with strict memory safety. Here are the results of a load test performed on Node.js using a locally generated file:
+`csv-airstream` is built to combine extreme speed with strict memory safety. The table below demonstrates the linear scalability of the parser across different file sizes (tested on Node.js):
 
-| File Processed | Rows Parsed | Execution Time | Processing Speed |
-| :--- | :--- | :--- | :--- |
-| **480.62 MB** | **5,000,000** | **8.20 s** | **610,128 rows / sec** |
+| File Processed | Rows Parsed | Execution Time | Processing Speed | Max RAM Footprint |
+| :--- | :--- | :--- | :--- | :--- |
+| **92.73 MB** | **1,000,000** | **1.76 s** | **568,505 rows / sec** | **< 20 MB** |
+| **480.62 MB** | **5,000,000** | **8.20 s** | **610,128 rows / sec** | **< 40 MB** |
+| **965.48 MB** | **10,000,000**| **17.45 s**| **573,164 rows / sec** | **< 40 MB** |
+
+![benchmark](./assets/benchmark.png)
+
+> **How were these metrics measured?**
+> Execution times were recorded using `Date.now()`. RAM consumption was monitored by polling `process.memoryUsage().heapUsed` every 100 milliseconds while the native stream read the file.
 
 **Test Conditions & Parsed Data:**
-This test is not a simple text stream read. The 8 measured seconds include all the following heavy operations processed on-the-fly for the 5 million rows:
-* **Local stream reading** (`fs.createReadStream`).
+This test is not a simple text stream read. The measured time includes all the following heavy operations processed on-the-fly for every row:
+* **I/O Reading** (`fs.createReadStream`).
 * **CSV Parsing:** Splitting 7 distinct columns per row.
-* **Structural validation:** Strict column count verification for each row.
-* **DTO Mapping & Typing:** Instantiation of 5 million `UserDto` objects.
+* **Structural validation:** Strict column count verification.
+* **DTO Mapping & Typing:** Instantiating `UserDto` class objects.
 * **Automatic casting:** Converting strings into native types (e.g., `"42.5"` -> `Number`, `"true"` -> `Boolean`).
 
+### Benchmark Code
+
+Here is the exact code executed to achieve these results:
 ```ts
+import fs from 'node:fs';
+import { Readable } from 'node:stream';
+import { Csv, CsvColumn } from '@jetonpeche/csv-airstream';
+
 class UserDto {
     @CsvColumn("id", { type: "number" }) id!: number;
     @CsvColumn("first_name") firstName!: string;
@@ -457,12 +471,54 @@ class UserDto {
     @CsvColumn("score", { type: "number" }) score!: number;
     @CsvColumn("created_at") createdAt!: string;
 }
+
+async function runBenchmark() 
+{
+    console.log("Launch of the load test...");
+    
+    const stats = fs.statSync(FICHIER_CIBLE);
+    const tailleMo = (stats.size / 1024 / 1024).toFixed(2);
+    
+    const memorySnapshots: any[] = [];
+    let rowCount = 0;
+    
+    // Memory measurement every 100ms
+    const interval = setInterval(() => {
+        const mem = process.memoryUsage();
+        memorySnapshots.push({
+            timeMs: Date.now() - startTime,
+            heapUsedMb: mem.heapUsed / 1024 / 1024
+        });
+    }, 100);
+
+    const startTime = Date.now();
+    
+    const nodeStream = fs.createReadStream(FICHIER_CIBLE);
+    const webStream = Readable.toWeb(nodeStream) as any;
+    
+    for await (const row of Csv.streamReaderWithClass(webStream, UserDto)) 
+    {
+        if (row.ok)
+            rowCount++;
+    }
+
+    const endTime = Date.now();
+    clearInterval(interval);
+    
+    const durationSec = ((endTime - startTime) / 1000).toFixed(2);
+    const rowsPerSec = Math.round(rowCount / (endTime - startTime) * 1000);
+    
+    console.log(`\n Benchmark done !`);
+    console.log(`Lines : ${rowCount.toLocaleString()}`);
+    console.log(`Total time : ${durationSec} secondes`);
+    console.log(`Speed : ${rowsPerSec.toLocaleString()} lines / seconde`);
+}
+
+runBenchmark();
 ```
 
-![Graphique de l'empreinte mémoire](assets/benchmark.png)
-
-**Memory Footprint Analysis:**
-The chart above illustrates perfect streaming behavior. Even though the file size is nearly 500 MB, the memory footprint never spikes. The sawtooth pattern demonstrates that memory is temporarily allocated for object creation (peaking at ~35 MB), then immediately freed by the Node.js Garbage Collector (dropping back to ~10 MB).
+**Memory Footprint Analysis:**  
+The chart above illustrates perfect streaming behavior. Even though the file size approaches one gigabyte, the memory footprint never spikes. The sawtooth pattern demonstrates that memory is temporarily allocated for object creation (consistently peaking under 40 MB), then immediately freed by the Node.js Garbage Collector.
 
 **Conclusion**: Zero memory leaks and total protection against Out Of Memory crashes, regardless of the file size.
 
