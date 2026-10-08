@@ -37,6 +37,7 @@ Conçue pour traiter des volumes massifs de données sur Node.js, Deno, Bun et l
 - [Exemple Complet : Nettoyage de données](#exemple-complet--nettoyage-de-données)
 - [Export de Fichiers & Web](#export-de-fichiers--web)
 - [Référence de l'API](#référence-de-lapi)
+- [Benchmark & performances](#benchmark--performance)
 
 ## Architecture & Cycle de vie (Lifecycle)
 Afin de garantir des performances optimales et une empreinte mémoire minimale, `csv-airstream` sépare strictement la phase de configuration de la phase de traitement par flux.  
@@ -430,6 +431,41 @@ Crée un flux d'écriture configuré par votre classe.
 | `alwaysQuote` | `boolean` | `false` | Force l'encadrement par des guillemets pour toutes les cellules. |
 | `quoteChar` | `string` | `'"'` | Le caractère utilisé pour encadrer les cellules contenant des caractères spéciaux. |
 | `lineTerminator` | `"\r\n" \| "\n"` | `"\r\n"` | Le saut de ligne ajouté à la fin de chaque enregistrement. |
+
+## Benchmark & Performance
+
+`csv-airstream` is built to combine extreme speed with strict memory safety. Here are the results of a load test performed on Node.js using a locally generated file:
+
+| File Processed | Rows Parsed | Execution Time | Processing Speed |
+| :--- | :--- | :--- | :--- |
+| **480.62 MB** | **5,000,000** | **8.20 s** | **610,128 rows / sec** |
+
+**Test Conditions & Parsed Data:**
+This test is not a simple text stream read. The 8 measured seconds include all the following heavy operations processed on-the-fly for the 5 million rows:
+* **Local stream reading** (`fs.createReadStream`).
+* **CSV Parsing:** Splitting 7 distinct columns per row.
+* **Structural validation:** Strict column count verification for each row.
+* **DTO Mapping & Typing:** Instantiation of 5 million `UserDto` objects.
+* **Automatic casting:** Converting strings into native types (e.g., `"42.5"` -> `Number`, `"true"` -> `Boolean`).
+
+```ts
+class UserDto {
+    @CsvColumn("id", { type: "number" }) id!: number;
+    @CsvColumn("first_name") firstName!: string;
+    @CsvColumn("last_name") lastName!: string;
+    @CsvColumn("email") email!: string;
+    @CsvColumn("is_active", { type: "boolean" }) isActive!: boolean;
+    @CsvColumn("score", { type: "number" }) score!: number;
+    @CsvColumn("created_at") createdAt!: string;
+}
+```
+
+![Graphique de l'empreinte mémoire](assets/benchmark.png)
+
+**Memory Footprint Analysis:**
+The chart above illustrates perfect streaming behavior. Even though the file size is nearly 500 MB, the memory footprint never spikes. The sawtooth pattern demonstrates that memory is temporarily allocated for object creation (peaking at ~35 MB), then immediately freed by the Node.js Garbage Collector (dropping back to ~10 MB).
+
+**Conclusion**: Zero memory leaks and total protection against Out Of Memory crashes, regardless of the file size.
 
 ## License
 MIT

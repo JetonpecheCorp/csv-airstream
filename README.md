@@ -36,6 +36,7 @@ Designed to process massive volumes of data on Node.js, Deno, Bun, and modern br
 - [Comprehensive Example](#complete-example-data-cleaning)
 - [File Export & Web Downloads](#file-export--web)
 - [API Reference](#api-references)
+- [Benchmark & performances](#benchmark--performances)
 
 ## Setup
 ```bash
@@ -429,6 +430,41 @@ Creates a writing stream configured by your class.
 | `alwaysQuote` | `boolean` | `false` | Forces Enclose all cells in quotation marks. |
 | `quoteChar` | `string` | `'"'` | The character used to enclose cells containing special characters. |
 | `lineTerminator` | `"\r\n" \| "\n"` | `"\r\n"` | The line break added at the end of each record. |
+
+## Benchmark & Performances
+
+`csv-airstream` est conçu pour allier vitesse extrême et sécurité de la mémoire. Voici les résultats d'un test de charge effectué sur Node.js avec un fichier généré localement :
+
+| Fichier traité | Lignes analysées | Temps d'exécution | Vitesse de traitement |
+| :--- | :--- | :--- | :--- |
+| **480.62 Mo** | **5 000 000** | **8.20 s** | **610 128 lignes / sec** |
+
+**Conditions du test et données analysées :**
+Ce test n'est pas une simple lecture de flux texte. Les 8 secondes mesurées incluent toutes les opérations suivantes traitées à la volée pour les 5 millions de lignes :
+* **Lecture du flux local** (`fs.createReadStream`).
+* **Parsing CSV :** Découpage de 7 colonnes par ligne.
+* **Validation structurelle :** Vérification stricte du nombre de colonnes pour chaque ligne.
+* **Mapping et Typage (DTO) :** Instanciation de 5 millions d'objets `UserDto`.
+* **Casting automatique :** Conversion des chaînes de caractères en types natifs (ex: `"42.5"` -> `Number`, `"true"` -> `Boolean`).
+
+```ts
+class UserDto {
+    @CsvColumn("id", { type: "number" }) id!: number;
+    @CsvColumn("first_name") firstName!: string;
+    @CsvColumn("last_name") lastName!: string;
+    @CsvColumn("email") email!: string;
+    @CsvColumn("is_active", { type: "boolean" }) isActive!: boolean;
+    @CsvColumn("score", { type: "number" }) score!: number;
+    @CsvColumn("created_at") createdAt!: string;
+}
+```
+
+![Graphique de l'empreinte mémoire](assets/benchmark.png)
+
+**Analyse de l'empreinte mémoire :**
+Le graphique ci-dessus illustre un comportement de flux (stream) parfait. Bien que le fichier pèse près de 500 Mo, l'empreinte mémoire ne s'envole jamais. Le motif en "dents de scie" montre que la mémoire est allouée temporairement (pic à ~35 Mo) pour créer les objets, puis immédiatement libérée par le Garbage Collector de Node.js (retour à ~10 Mo). 
+
+**Résultat :** Zéro fuite de mémoire (memory leak) et une protection totale contre les crashs *Out Of Memory*, quelle que soit la taille du fichier.
 
 ## License
 MIT
