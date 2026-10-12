@@ -41,6 +41,7 @@ class CsvParserEngine<T>
     private clesCiblesPrecalculees: string[] | null = null;
     private erreurLigne: CsvErrorDetail | null = null;
     private ignorerProchainLF = false;
+    private premierMorceau = true;
 
     private readonly ignorerLignesVides: boolean;
     private readonly commentaire?: string;
@@ -112,8 +113,16 @@ class CsvParserEngine<T>
     {
         if (chunk.length === 0) return;
 
-        // Élimine le BOM de début de fichier ET les BOM internes générés par concaténation
-        const chunkNettoye = chunk.replace(/\uFEFF/g, "");
+        let chunkNettoye = chunk;
+        
+        // On ne vérifie et supprime le BOM QUE sur le premier morceau (O(1) au lieu de O(N))
+        if (this.premierMorceau) 
+        {
+            if (chunkNettoye.charCodeAt(0) === 0xFEFF) {
+                chunkNettoye = chunkNettoye.slice(1);
+            }
+            this.premierMorceau = false;
+        }
 
         if (this.enReniflage)
         {
@@ -299,12 +308,24 @@ class CsvParserEngine<T>
             switch (this.etat)
             {
                 case Etat.DEBUT_CHAMP:
-                    if (caractere === this.caractereGuillemet)
+                    // avance rapidement jusqu'au prochain caractère spécial
+                    let indexRapide = i;
+                    while (indexRapide < morceau.length) 
                     {
-                        this.etat = Etat.DANS_GUILLEMETS;
-                        indexDebutTexte = i + 1; // On ignore le guillemet ouvrant dans le texte
+                        const c = morceau[indexRapide];
+                        if (c === this.separateur || c === "\r" || c === "\n" || c === this.caractereGuillemet) 
+                            break;
+
+                        indexRapide++;
                     }
-                    else if (caractere === this.separateur)
+                    
+                    if (indexRapide > i) 
+                    {
+                        i = indexRapide - 1;
+                        continue;
+                    }
+
+                    if (caractere === this.separateur)
                     {
                         this.enregistrerChamp(); // Le champ est vide
                         indexDebutTexte = i + 1; // On avance après le séparateur
@@ -684,12 +705,12 @@ class CsvParserEngine<T>
                 data: objet as unknown as T,
             });
         }
-        else
+       else
         {
             controller.enqueue({
                 ok: true,
                 line: this.numeroLigne,
-                data: this.ligneCourante as unknown as T,
+                data: [...this.ligneCourante] as unknown as T
             });
         }
 
@@ -698,7 +719,7 @@ class CsvParserEngine<T>
 
     private reinitialiserLigne(): void
     {
-        this.ligneCourante = [];
+        this.ligneCourante.length = 0;
         this.numeroLigne++;
         this.erreurLigne = null;
         this.etat = Etat.DEBUT_CHAMP;

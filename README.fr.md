@@ -103,14 +103,14 @@ const csvData = `name *;is active (0, 1) *
 Jane Doe;1`;
 
 // LECTURE : Le mode "auto" devine que le séparateur est le point-virgule
-for await (const row of Csv.streamReaderWithClass(csvData, UserDto, { delimiter: "auto" })) 
+for await (const row of await Csv.streamReaderWithFile(csvData, UserDto, { delimiter: "auto" })) 
 {
     if (row.ok)
         console.log(`Utilisateur: ${row.data.name}, Actif: ${row.data.isActive}`);
 }
 
 // ÉCRITURE : Génère automatiquement les entêtes dans le bon ordre (order: 0, 1)
-const writer = Csv.streamWriterWithClass(UserDto, { delimiter: ";" });
+const writer = await Csv.createFileWriter("./export.csv", UserDto, { delimiter: ";" });
 
 await writer.write({ name: "Jane Doe", isActive: "1" });
 await writer.close();
@@ -137,7 +137,7 @@ class LogEntryDto
 const rawLogs = `2026-10-06T08:00:00Z,INFO,Serveur démarré
 2026-10-06T08:00:01Z,WARN,Pic de mémoire détecté`;
 
-for await (const row of Csv.streamReaderWithClass(rawLogs, LogEntryDto)) 
+for await (const row of await Csv.streamReaderWithFile(rawLogs, LogEntryDto)) 
 {
     if (row.ok) 
         console.log(`[${row.data.level}] ${row.data.message}`);
@@ -154,11 +154,31 @@ const rawCsv = `id,name,price
 1,Clavier,49.99
 2,"Souris sans fil",24.50`;
 
-for await (const row of Csv.streamReader(rawCsv, { hasHeader: true })) 
+for await (const row of await Csv.streamReaderWithFile(rawCsv, undefined, { hasHeader: true })) 
 {
     if (row.ok) 
         console.log(`Ligne ${row.line}: ${row.data.name} (${row.data.price}€)`);
 }
+```
+
+### Note sur la lecture de fichiers (Chemins vs Flux)
+Il est crucial de comprendre la différence entre donner un **chemin de fichier** et donner un **flux** à la bibliothèque :
+
+**1. Vous avez un chemin de fichier local (ex: `./assets/data.csv`) :**
+Utilisez toujours **`Csv.streamReaderWithFile()`**. Si vous passez un chemin directement à `streamReader`, le parseur croira que le texte `"./assets/data.csv"` est le contenu même de votre CSV !
+
+```ts
+// BONNE PRATIQUE (Node.js) :
+const reader = await Csv.streamReaderWithFile("./assets/data.csv", UserDto);
+```
+
+**2. Vous avez un flux ou du texte brut (ex: Navigateur, API, Fetch) :**
+Utilisez les méthodes natives **`streamReader()`** ou **`streamReaderWithClass()`**. Ces méthodes sont "agnostiques" et fonctionnent sur n'importe quel environnement (Browser, Edge, Deno...).
+
+```ts
+// BONNE PRATIQUE (Navigateur / Fetch) :
+const response = await fetch("https://api.com/data.csv");
+const reader = Csv.streamReaderWithClass(response.body, UserDto);
 ```
 
 ### Transformations Personnalisées (Custom Transforms)
@@ -183,7 +203,7 @@ class ProductDto
 const csvData = `name,colors,created_at
 T-Shirt,rouge|bleu,2026-10-06T10:00:00Z`;
 
-for await (const row of Csv.streamReaderWithClass(csvData, ProductDto)) 
+for await (const row of await Csv.streamReaderWithFile(csvData, ProductDto)) 
 {
      // Affiche le tableau JavaScript
     if (row.ok)
@@ -215,7 +235,7 @@ document.getElementById('csvFileInput').addEventListener('change', async (event)
 ```ts
 try 
 {
-    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
+    for await (const row of await Csv.streamReaderWithFile(stream, UserDto)) 
     {
         if (row.ok) 
             console.log(row.data);
@@ -261,7 +281,7 @@ Ecran 27";DISP-404;249.00;8`;
 async function runInventoryPipeline() 
 {
     // Lit et on valide les données à la volée
-    const reader = Csv.streamReaderWithClass(dirtyCsv, InventoryItemDto, {
+    const reader = await Csv.streamReaderWithFile(dirtyCsv, InventoryItemDto, {
         delimiter: "auto", // Trouve le point-virgule tout seul !
         comment: "#",      // Ignore les lignes commençant par #
         trim: true,        // Retire les espaces superflus
@@ -277,8 +297,7 @@ async function runInventoryPipeline()
     });
 
     // Prépare le flux pour écrire un fichier tout propre
-    const writer = Csv.streamWriterWithClass(InventoryItemDto, { delimiter: "," });
-    const savePromise = Csv.saveToFile(writer, "./clean_inventory.csv");
+    const writer = await Csv.createFileWriter("./clean_inventory.csv", InventoryItemDto, { delimiter: "," });
 
     let successCount = 0;
     let failureCount = 0;
@@ -299,7 +318,6 @@ async function runInventoryPipeline()
     }
 
     await writer.close();
-    await savePromise;
 
     console.log(`Terminé : ${successCount} exportés, ${failureCount} rejetés.`);
 }
@@ -322,17 +340,11 @@ class ExportDto
     title!: string;
 }
 
-const writer = Csv.streamWriterWithClass(ExportDto);
-
-// Utilise les flux du système de fichiers
-const fileSave = Csv.saveToFile(writer, "./exports/rapport.csv"); 
+const writer = await Csv.createFileWriter("./exports/rapport.csv", ExportDto);
 
 await writer.write({ id: "1", title: "Traitement de flux" });
 await writer.write({ id: "2", title: 'Guillemets "échappés"' });
-await writer.close();
-
-// Attend que le fichier soit totalement écrit
-await fileSave; 
+await writer.close(); // Gère la sauvegarde automatiquement !
 ```
 
 ### Téléchargement HTTP (Next.js, Cloudflare, Express...)
@@ -436,13 +448,14 @@ Crée un flux d'écriture configuré par votre classe.
 
 `csv-airstream` est conçu pour allier vitesse extrême et sécurité de la mémoire. Le tableau ci-dessous démontre la scalabilité linéaire du parseur sur des fichiers de différentes tailles (testé sur Node.js) :
 
-| Fichier traité | Lignes analysées | Temps d'exécution | Vitesse de traitement | Empreinte RAM Max |
+| Fichier traité | Lignes analysées | Temps Lecture (Parse) | Temps Écriture (Str) | Empreinte RAM Max |
 | :--- | :--- | :--- | :--- | :--- |
-| **92.73 Mo**| **1 000 000**| **1.76 s**| **568 505 lignes / sec**| **< 20 Mo**|
-| **480.62 Mo** | **5 000 000** | **8.20 s** | **610 128 lignes / sec** | **< 40 Mo** |
-| **965.48 Mo** | **10 000 000**| **17.45 s**| **573 164 lignes / sec**| **< 40 Mo**|
+| **92.73 Mo**| **1 000 000**| **1.1 s**| **2.6 s**| **~15 Mo**|
+| **480.62 Mo** | **5 000 000** | **4.8 s** | **12.7 s** | **~27 Mo** |
+| **965.48 Mo** | **10 000 000**| **9.7 s**| **26.7 s**| **~23 Mo**|
+| **4.8 Go** | **50 000 000**| **50.5 s**| **146.3 s**| **< 10 Mo**|
 
-![benchmark](./assets/benchmark.png)
+![benchmark](https://raw.githubusercontent.com/JetonpecheCorp/csv-airstream/main/benchmark.svg)
 
 > **Comment ces tests ont-ils été mesurés ?**
 > Les temps d'exécution ont été chronométrés via `Date.now()`. La consommation de la RAM a été mesurée en sondant `process.memoryUsage().heapUsed` toutes les 100 millisecondes pendant que le flux natif lisait le fichier.

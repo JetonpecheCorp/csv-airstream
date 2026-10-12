@@ -3,6 +3,8 @@ import { CsvWriterStream, type RowInput } from "./writer.js";
 import type { CsvReaderOptions, CsvWriterOptions } from "./types/CsvOption.js";
 import type { CsvRowResult } from "./types/CsvRowResult.js";
 import { ClassConstructor, getCsvSchema, CSV_SCHEMA_KEY } from "./decorator.js";
+import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 
 /**
  * Main entry point for reading and writing CSV files.
@@ -203,22 +205,22 @@ export class Csv
         {
             // Décodeur instancié uniquement si un flux binaire est détecté
             let decoder: TextDecoder | null = null;
-            
+
             const autoDecoder = new TransformStream<any, string>({
                 transform(chunk, controller) 
                 {
                     if (typeof chunk === "string") 
                     {
                         controller.enqueue(chunk);
-                    } 
+                    }
                     else if (chunk instanceof Uint8Array || ArrayBuffer.isView(chunk)) 
                     {
-                        if (!decoder) 
+                        if (!decoder)
                             decoder = new TextDecoder("utf-8", { fatal: false });
 
                         // L'option { stream: true } gère les caractères coupés au milieu d'un chunk
                         controller.enqueue(decoder.decode(chunk, { stream: true }));
-                    } 
+                    }
                     else 
                     {
                         // Fallback pour tout autre type inattendu
@@ -230,7 +232,7 @@ export class Csv
                     if (decoder) 
                     {
                         const reste = decoder.decode();
-                        if (reste) 
+                        if (reste)
                             controller.enqueue(reste);
                     }
                 }
@@ -317,34 +319,115 @@ export class Csv
     }
 
     /**
-     * A handy helper for Node.js scripts. 
-     * It saves everything you write directly to your computer's hard drive.
-     *
-     * @param writer The CSV writer you created.
-     * @param filePath Where to save the file (e.g., `"./exports/my-data.csv"`).
-    * @returns A Promise that resolves once all stream contents are successfully flushed to disk.
-     * @throws {Error} If file writing fails (e.g., missing permissions or locked file).
-     */
-    public static async saveToFile(
-        writer: { readable: ReadableStream<string> },
-        filePath: string
-    ): Promise<void>
+         * Creates a write stream directly connected to a local file (Node.js).
+         * Ideal for writing millions of lines without saturating RAM.
+         * 
+         * @example
+         * const writer = await Csv.createFileWriter("./export.csv", User);
+         * await writer.write({ name: "Alice", age: 30 });
+         * await writer.close(); // Backup and close the file
+         */
+    public static async createFileStreamWriter<T extends object = any>(
+        filePath: string,
+        dtoClass?: ClassConstructor<T>,
+        options?: CsvWriterOptions
+    )
     {
         const { createWriteStream } = await import("node:fs");
+        const { Writable } = await import("node:stream");
+
+        const fileStream = createWriteStream(filePath);
+        // Conversion du flux Node.js en flux Web standard
+        const webWritable = Writable.toWeb(fileStream) as WritableStream<Uint8Array>;
+
+        // Initialisation du parseur CSV
+        const csvWriter = dtoClass 
+            ? Csv.streamWriterWithClass(dtoClass, options as Omit<CsvWriterOptions<T>, "headers"> & { columnsOrder?: (keyof T)[] })
+            : Csv.streamWriter(options);
+
+        // On connecte la sortie texte du CSV vers le fichier binaire
+        const pipePromise = csvWriter.readable
+            .pipeThrough(new TextEncoderStream())
+            .pipeTo(webWritable);
+
+        return {
+            /** Écrit une ligne dans le fichier CSV */
+            write: (row: T) => csvWriter.write(row),
+
+            /** Ferme le flux et attend que l'écriture sur le disque soit totalement terminée */
+            close: async () =>
+            {
+                await csvWriter.close();
+                await pipePromise;
+            }
+        };
+    }
+
+    /**
+     * "One-Shot" method: Directly writes an array (or iterable) to a CSV file.
+     * The simplest solution if your data fits in memory.
+     * 
+     * @example
+     * const users = [{ name: "Alice" }, { name: "Bob" }];
+     * await Csv.writeFile("./users.csv", users, User);
+     */
+    public static async writeFile<T extends object = any>(
+        filePath: string,
+        data: Iterable<T> | AsyncIterable<T>,
+        dtoClass?: ClassConstructor<T>,
+        options?: CsvWriterOptions<T>
+    ): Promise<void> 
+    {
+        const fileWriter = await Csv.createFileStreamWriter(filePath, dtoClass, options);
+        
+        for await (const row of data)
+            await fileWriter.write(row);
+        
+        await fileWriter.close();
+    }
+
+    /**
+     * Reads a local CSV file (Node.js only).
+     * @example
+     * const rows = await Csv.streamReaderWithFile("./data.csv", User);
+     */
+    public static async streamReaderWithFile<T extends object = any>(
+        filePath: string,
+        dtoClass?: ClassConstructor<T>,
+        options?: CsvReaderOptions<T>
+    ): Promise<AsyncIterable<CsvRowResult<T>>>
+    {
+        const { createReadStream } = await import("node:fs");
         const { Readable } = await import("node:stream");
-        const { pipeline } = await import("node:stream/promises");
 
-        const byteStream = writer.readable.pipeThrough(new TextEncoderStream());
-        const nodeReadable = Readable.fromWeb(byteStream as any);
-        const fileDestination = createWriteStream(filePath);
+        const nodeStream = createReadStream(filePath);
+        const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
 
-        try
+        if (dtoClass)
         {
-            await pipeline(nodeReadable, fileDestination);
-        } 
-        catch (error)
-        {
-            throw new Error(`CSV File Write Error at '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
+            return Csv.streamReaderWithClass(webStream, dtoClass, options);
         }
+        return Csv.streamReader(webStream, options as any) as AsyncIterable<CsvRowResult<T>>;
+    }
+
+    /**
+     * Downloads and reads a CSV file from a URL (Web, Node, Edge).
+     * @example
+     * const rows = await Csv.fetchUrl("https://example.com/data.csv", User);
+     */
+    public static async fetchUrl<T extends object = any>(
+        url: string | URL,
+        dtoClass?: ClassConstructor<T>,
+        options?: CsvReaderOptions<T>
+    ): Promise<AsyncIterable<CsvRowResult<T>>>
+    {
+        const response = await fetch(url);
+        if (!response.body) throw new Error("Impossible de lire le flux de la réponse depuis l'URL.");
+
+        if (dtoClass)
+        {
+            return Csv.streamReaderWithClass(response.body, dtoClass, options);
+        }
+        return Csv.streamReader(response.body, options as any) as AsyncIterable<CsvRowResult<T>>;
     }
 }

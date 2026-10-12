@@ -16,6 +16,7 @@ class CsvWriterEngine
     private readonly guillemetDouble: string;
     private enTeteEcrite = false;
     private premierMorceauEmis = false;
+    private clesEnregistrementCache?: string[];
 
     private tampon: string[] = [];
     private tailleTamponCourante = 0;
@@ -40,14 +41,14 @@ class CsvWriterEngine
         this.guillemetDouble = `${this.caractereGuillemet}${this.caractereGuillemet}`;
     }
 
-public writeRow(
+    public writeRow(
         ligne: RowInput,
         controller: TransformStreamDefaultController<string>
     ): void
     {
-        let sortieChunk = "";
-        const prefixe = (!this.premierMorceauEmis && this.writeBom) ? "\uFEFF" : "";
+        const cellules: string[] = [];
 
+        // Gestion de l'entête
         if (!this.enTeteEcrite)
         {
             this.enTeteEcrite = true;
@@ -56,18 +57,22 @@ public writeRow(
             if (!listeEnTetes && !Array.isArray(ligne) && typeof ligne === "object" && ligne !== null)
             {
                 listeEnTetes = Object.keys(ligne);
+                this.clesEnregistrementCache = listeEnTetes; // Mise en cache immédiate
             }
 
             if (listeEnTetes && listeEnTetes.length > 0)
             {
+                const prefixeEntete = (!this.premierMorceauEmis && this.writeBom) ? "\uFEFF" : "";
                 const enTetesFormatees = listeEnTetes.map((h) => this.formaterCellule(h));
-                sortieChunk += prefixe + enTetesFormatees.join(this.separateur) + this.finDeLigne;
+                
+                const ligneEntete = prefixeEntete + enTetesFormatees.join(this.separateur) + this.finDeLigne;
+                this.tampon.push(ligneEntete);
+                this.tailleTamponCourante += ligneEntete.length;
                 this.premierMorceauEmis = true;
             }
         }
 
-        const cellules: string[] = [];
-
+        // Remplissage des cellules
         if (Array.isArray(ligne))
         {
             for (let i = 0; i < ligne.length; i++)
@@ -78,12 +83,15 @@ public writeRow(
         else if (typeof ligne === "object" && ligne !== null)
         {
             const enregistrement = ligne as Record<string, unknown>;
-            const cles = this.clesProprietes ?? this.enTetes ?? Object.keys(enregistrement);
+            
+            // On utilise le cache si disponible, ce qui évite un Object.keys() par ligne
+            if (!this.clesEnregistrementCache)
+                this.clesEnregistrementCache = this.clesProprietes ?? this.enTetes ?? Object.keys(enregistrement);
+
+            const cles = this.clesEnregistrementCache;
             
             for (let i = 0; i < cles.length; i++)
-            {
                 cellules.push(this.formaterCellule(enregistrement[cles[i]]));
-            }
         }
 
         const debutLigne = (!this.premierMorceauEmis && this.writeBom) ? "\uFEFF" : "";
@@ -91,16 +99,12 @@ public writeRow(
         
         const ligneComplete = debutLigne + cellules.join(this.separateur) + this.finDeLigne;
         
-        // Ajout dans le tampon
-        sortieChunk += ligneComplete;
-        this.tampon.push(sortieChunk);
-        this.tailleTamponCourante += sortieChunk.length;
+        // On pousse directement la chaîne dans le tableau, sans += qui copie la mémoire
+        this.tampon.push(ligneComplete);
+        this.tailleTamponCourante += ligneComplete.length;
 
-        // Vidage conditionnel basé sur la taille en mémoire
         if (this.tailleTamponCourante >= this.tailleMaxTamponCaracteres)
-        {
             this.flush(controller);
-        }
     }
 
     public flush(controller: TransformStreamDefaultController<string>): void

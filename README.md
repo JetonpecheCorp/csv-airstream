@@ -2,49 +2,46 @@
 
 *[Documentation en français](https://github.com/jetonpecheCorp/csv-airstream/blob/main/README.fr.md)*
 
-An ultra-lightweight CSV streaming library with zero dependencies.
-Designed to process massive volumes of data on Node.js, Deno, Bun, and modern browsers without causing memory spikes (OOM).
+An ultra-lightweight, zero-dependency CSV streaming library.
+Designed to process massive data volumes on Node.js, Deno, Bun, and modern browsers without causing memory spikes (OOM).
 
-## Why choose csv-airstream ?
+## Why choose csv-airstream?
 
 * **Standard Web Streams API**: Works natively in browsers and on servers (Node.js, Edge) without requiring polyfills or external adapters.
 
 * **Magic Typing (DTO Decorators)**: Bind complex CSV headers (e.g., `name *`, `active (0,1)`) directly to your TypeScript classes using `@CsvColumn` and `@CsvIndex` decorators.
 
-* **Automatic Detection (Sniffing)**: `"auto"` mode intelligently guesses the delimiter (comma, semicolon, tab, etc.) by analyzing the first few lines.
+* **Auto-Sniffing**: The `"auto"` mode intelligently guesses the delimiter (comma, semicolon, tab...) by analyzing the first few lines.
 
-* **Zero Crashes (Result Pattern)**: Instead of crashing your application on the first error, the stream returns an explicit object—`{ ok: true, data }` or `{ ok: false, error }`—for each line.
+* **Zero Crash (Result Pattern)**: Instead of crashing your application at the first error, the stream returns an explicit `{ ok: true, data }` or `{ ok: false, error }` object row by row.
 
-* **Simplified Export**: Built-in utility functions to save directly to disk (`saveToFile`) or trigger an HTTP download (`toResponse`).
+* **Simplified Export**: Built-in utility functions to easily save data to your disk (`createFileWriter`) or trigger an HTTP download (`toResponse`).
 
-* **Standard Compliance (RFC 4180)**: Natively handles multi-line cells, escaped quotes, and UTF-8 BOM headers.
+* **RFC 4180 Compliant**: Natively handles multiline cells, escaped quotes, and UTF-8 BOM headers.
 
-> **NOTE for Pros (Performance & Memory)**:
-`csv-airstream` never buffers the entire file in memory. Furthermore, column mapping (Schema Resolution) is calculated only once at startup. Subsequently, every line read or written uses O(1) index-based access (zero overhead), ensuring blazing-fast speeds even with multi-gigabyte files.
+> **NOTE for pros (Performance & Memory)**:
+`csv-airstream` never buffers the entire file in memory. Furthermore, column mapping (Schema Resolution) is computed only once at startup. Then, each read or written row uses O(1) index access (Zero Overhead), guaranteeing blazing-fast speeds even on multi-gigabyte files.
 
 ## 📑 Table of Contents
 
-- [Features](#why-choose-csv-airstream-)
-- [Installation](#setup)
+- [Why choose csv-airstream?](#why-choose-csv-airstream)
 - [Architecture & Lifecycle](#architecture--lifecycle)
+- [Installation](#installation)
 - [Quick Start](#quick-start)
-  - [1. Class DTO Mapping](#easy-mapping-with-classes-dto)
-  - [2. Headerless CSVs with @CsvIndex](#headerless-files-with-csvindex)
-  - [3. Low-Level Untyped Streams](#raw-read-untyped)
-  - [4. Custom Data Transformations](#custom-data-transformations)
-  - [5. Browser Usage (Frontend)](#browser-usage-frontend)
-- [Comprehensive Example](#complete-example-data-cleaning)
-- [File Export & Web Downloads](#file-export--web)
-- [API Reference](#api-references)
-- [Benchmark & performances](#benchmark--performance)
-
-## Setup
-```bash
-npm install @jetonpeche/csv-airstream
-```
+  - [1. Easy Mapping with Classes (DTO)](#easy-mapping-with-classes-dto)
+  - [2. Headerless Files with @CsvIndex](#headerless-files-with-csvindex)
+  - [3. Raw Reading (Without Typing)](#raw-reading-without-typing)
+  - [4. Note on Reading Files (Paths vs Streams)](#note-on-reading-files-paths-vs-streams)
+  - [5. Custom Transforms](#custom-transforms)
+  - [6. Browser Usage (Frontend)](#browser-usage-frontend)
+  - [7. Error Handling](#error-handling)
+- [Full Example: Data Cleaning](#full-example-data-cleaning)
+- [File & Web Export](#file--web-export)
+- [API Reference](#api-reference)
+- [Benchmark & Performance](#benchmark--performance)
 
 ## Architecture & Lifecycle
-To guarantee optimal performance and a minimal memory footprint, `csv-airstream` strictly separates the schema compilation phase from the actual stream processing.  
+To guarantee optimal performance and a minimal memory footprint, `csv-airstream` strictly separates the configuration phase from the stream processing phase.  
 Here is the exact execution order when using `streamReaderWithClass`:
 
 ```mermaid
@@ -75,22 +72,27 @@ flowchart TD
     Row -. Next Row .-> Streaming
 ```
 
-### Key takeaways
-- Decorators are evaluated only once at startup. The `transform` functions are cached.
-- `validateCell` is always called before class instantiation and before transformations. It always receives the raw string value.
-- `transform` is only executed if the cell passes the validation step. The returned value is then directly injected into the newly created DTO instance.
+### Important Details
+- Decorators are evaluated only once at startup. `transform` functions are cached.
+- `validateCell` is always called before class instantiation and transformation. It always receives the raw string value.
+- `transform` is executed only if the cell successfully passes validation. The result is directly injected into the new DTO instance.
+
+## Installation
+```bash
+npm install @jetonpeche/csv-airstream
+```
 
 ## Quick start
 
 ### Easy mapping with Classes (DTO)
-Transform your CSV lines directly into clean, validated TypeScript objects.
+Transform your CSV rows directly into clean, validated TypeScript objects.
 
 ```ts
 import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
 
 class UserDto 
 {
-    // Look for the exact column "name *" in the CSV.
+    // Looks for the exact "name *" column in the CSV
     @CsvColumn("name *", { required: true, order: 0 })
     name!: string;
 
@@ -101,22 +103,22 @@ class UserDto
 const csvData = `name *;is active (0, 1) *
 Jane Doe;1`;
 
-// READING: "Auto" mode guesses that the separator is the semicolon.
-for await (const row of Csv.streamReaderWithClass(csvData, UserDto, { delimiter: "auto" })) 
+// READ: The "auto" mode guesses that the delimiter is a semicolon
+for await (const row of await Csv.streamReaderWithFile(csvData, UserDto, { delimiter: "auto" })) 
 {
     if (row.ok)
-        console.log(`user: ${row.data.name}, Active: ${row.data.isActive}`);
+        console.log(`User: ${row.data.name}, Active: ${row.data.isActive}`);
 }
 
-// WRITING: Automatically generates headers in the correct order (order: 0, 1)
-const writer = Csv.streamWriterWithClass(UserDto, { delimiter: ";" });
+// WRITE: Automatically generates headers in the right order (order: 0, 1)
+const writer = await Csv.createFileWriter("./export.csv", UserDto, { delimiter: ";" });
 
 await writer.write({ name: "Jane Doe", isActive: "1" });
 await writer.close();
 ```
 
-### Headerless files with `@CsvIndex`
-If your CSV file does not have a header row, you can map your properties directly to the column position (0, 1, 2...).
+### Headerless Files with `@CsvIndex`
+If your CSV file doesn't have a header row, you can bind your properties directly to the column index (0, 1, 2...).
 
 ```ts
 import { Csv, CsvIndex } from "@jetonpeche/csv-airstream";
@@ -134,34 +136,54 @@ class LogEntryDto
 }
 
 const rawLogs = `2026-10-06T08:00:00Z,INFO,Server started
-2026-10-06T08:00:01Z,WARN,Memory leak detected`;
+2026-10-06T08:00:01Z,WARN,Memory spike detected`;
 
-for await (const row of Csv.streamReaderWithClass(rawLogs, LogEntryDto)) 
+for await (const row of await Csv.streamReaderWithFile(rawLogs, LogEntryDto)) 
 {
     if (row.ok) 
         console.log(`[${row.data.level}] ${row.data.message}`);
 }
 ```
 
-### Raw Read (Untyped)
-To read a file quickly without creating a class beforehand.
+### Raw Reading (Without Typing)
+Read a file quickly without creating a class beforehand.
 
 ```ts
 import { Csv } from "@jetonpeche/csv-airstream";
 
 const rawCsv = `id,name,price
 1,Keyboard,49.99
-2,"Mouse wireless",24.50`;
+2,"Wireless Mouse",24.50`;
 
-for await (const row of Csv.streamReader(rawCsv, { hasHeader: true })) 
+for await (const row of await Csv.streamReaderWithFile(rawCsv, undefined, { hasHeader: true })) 
 {
     if (row.ok) 
         console.log(`Line ${row.line}: ${row.data.name} ($${row.data.price})`);
 }
 ```
 
-### Custom Data Transformations
-You can mutate raw string values into complex structures (like Arrays or Dates) on the fly using the `transform` option right inside the decorator.
+### Note on Reading Files (Paths vs Streams)
+It is crucial to understand the difference between providing a file path and providing a stream to the library:
+
+#### 1. You have a local file path (e.g.,` ./assets/data.csv`):
+Always use `Csv.streamReaderWithFile()`. If you pass a path directly to `streamReader`, the parser will think the string `"./assets/data.csv"` is the actual CSV content!
+
+```ts
+// BEST PRACTICE (Node.js):
+const reader = await Csv.streamReaderWithFile("./assets/data.csv", UserDto);
+```
+
+#### You have a stream or raw text (e.g., Browser, API, Fetch): 
+Use the native `streamReader()` or `streamReaderWithClass()` methods. These methods are "agnostic" and work across any environment (Browser, Edge, Deno...).
+
+```ts
+// BEST PRACTICE (Browser / Fetch):
+const response = await fetch("[https://api.com/data.csv](https://api.com/data.csv)");
+const reader = Csv.streamReaderWithClass(response.body, UserDto);
+```
+
+### Custom Transforms
+You can transform any raw value on the fly into an array, date, or complex object using the `transform` option directly in the decorator.
 
 ```ts
 import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
@@ -170,11 +192,11 @@ class ProductDto
 {
     @CsvColumn("name") name!: string;
 
-    // Parses "red|blue|green" into a JavaScript Array
+    // Converts "red|blue|green" into an array ["red", "blue", "green"]
     @CsvColumn("colors", { transform: (val) => val.split("|").map(c => c.trim()) })
     colors!: string[];
 
-    // Applies custom date parsing logic
+    // Applies a custom date format
     @CsvColumn("created_at", { transform: (val) => new Date(val).toISOString() })
     createdAt!: string;
 }
@@ -182,18 +204,18 @@ class ProductDto
 const csvData = `name,colors,created_at
 T-Shirt,red|blue,2026-10-06T10:00:00Z`;
 
-for await (const row of Csv.streamReaderWithClass(csvData, ProductDto)) 
+for await (const row of await Csv.streamReaderWithFile(csvData, ProductDto)) 
 {
-    // Safely logs the parsed Array !
+     // Outputs the JavaScript array
     if (row.ok)
         console.log(row.data.colors);
 }
 ```
 
-> **Tip**: You can also override these transformers at runtime (without changing the class) by passing the `transformers: new Map(...)` option into `Csv.streamReaderWithClass()`.
+>*Tip*: You can also override these transforms at runtime (without modifying the class) by passing the `transformers: new Map(...)` option into `Csv.streamReaderWithClass()`.
 
-### Browser usage (Frontend)
-Read huge files directly from the user's browser without crashing the tab, thanks to the native `File.stream()` API:
+### Browser Usage (Frontend)
+Read massive files directly from the user's browser without crashing the tab, using the native `File.stream()` API:
 ```js
 document.getElementById('csvFileInput').addEventListener('change', async (event) => 
 {
@@ -201,11 +223,11 @@ document.getElementById('csvFileInput').addEventListener('change', async (event)
     if (!file) 
         return;
 
-    // file.stream() returns a native ReadableStream, perfect for csv-airstream !
+    // file.stream() returns a native ReadableStream, perfect for csv-airstream!
     for await (const row of Csv.streamReader(file.stream(), { hasHeader: true })) 
     {
         if (row.ok)
-            console.log("Ligne lue :", row.data);
+            console.log("Read row:", row.data);
     }
 });
 ```
@@ -214,7 +236,7 @@ document.getElementById('csvFileInput').addEventListener('change', async (event)
 ```ts
 try 
 {
-    for await (const row of Csv.streamReaderWithClass(stream, UserDto)) 
+    for await (const row of await Csv.streamReaderWithFile(stream, UserDto)) 
     {
         if (row.ok) 
             console.log(row.data);
@@ -222,13 +244,13 @@ try
 } 
 catch (error) 
 {
-    // Intercepts critical stream errors (e.g., file not found, network outage)
-    console.error("The stream has been interrupted:", error);
+    // Catches critical stream errors (e.g., file not found, network drop)
+    console.error("Stream was interrupted:", error);
 }
 ```
 
-## Complete Example: Data Cleaning
-Here is a realistic scenario: an inventory file arrives in a very poorly formatted state (comments, random separators, incorrect values). We will read it, validate it, and write a clean file back to the hard drive.
+## Full Example: Data Cleaning
+Here is a realistic scenario: an inventory file arrives poorly formatted (comments, random delimiters, incorrect values). We will read it, validate it, and write a clean file to the hard drive.
 
 ```ts
 import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
@@ -249,40 +271,39 @@ class InventoryItemDto
 }
 
 // A dirty CSV file: BOM header, comments (#), incomplete lines
-const dirtyCsv = `\uFEFF# Export inventory number 42
+const dirtyCsv = `\uFEFF# Inventory Export Lot 42
 # Date: 2026-10-06
 product name *;product sku #;unit price (usd);in stock
-Mecanic keyboard;TECH-101;129.99;15
-Mouse wireless;TECH-202;39.50;50
+Mechanical Keyboard;TECH-101;129.99;15
+Wireless Mouse;TECH-202;39.50;50
 ;TECH-303;-10.00;0
-Screen 27";DISP-404;249.00;8`;
+27" Monitor;DISP-404;249.00;8`;
 
 async function runInventoryPipeline() 
 {
-    // We read and validate the data on the fly.
-    const reader = Csv.streamReaderWithClass(dirtyCsv, InventoryItemDto, {
-        delimiter: "auto", // Find the semicolon all by yourself!
-        comment: "#",      // Ignore lines starting with #
-        trim: true,        // Remove any unnecessary spaces
+    // Reads and validates data on the fly
+    const reader = await Csv.streamReaderWithFile(dirtyCsv, InventoryItemDto, {
+        delimiter: "auto", // Finds the semicolon automatically!
+        comment: "#",      // Ignores lines starting with #
+        trim: true,        // Trims extra whitespaces
         strictColumnCount: true,
         validateCell: (value, { columnName }) => 
         {
-            // Custom rule: negative prices are rejected.
+            // Custom rule: reject negative prices
             if (columnName === "unit price (usd)" && Number(value) < 0) 
-                return "NEGATIVE_PRICE_PROHIBITED";
+                return "NEGATIVE_PRICE_FORBIDDEN";
 
             return true;
         }
     });
 
-    // Prepares the stream to write a clean file.
-    const writer = Csv.streamWriterWithClass(InventoryItemDto, { delimiter: "," });
-    const savePromise = Csv.saveToFile(writer, "./clean_inventory.csv");
+    // Prepares the writer stream to output a clean file
+    const writer = await Csv.createFileWriter("./clean_inventory.csv", InventoryItemDto, { delimiter: "," });
 
     let successCount = 0;
     let failureCount = 0;
 
-    // Passes data from one stream to another
+    // Pipes data from one stream to the other
     for await (const row of reader) 
     {
         if (row.ok) 
@@ -293,22 +314,21 @@ async function runInventoryPipeline()
         else 
         {
             failureCount++;
-            console.warn(`Line ${row.line} ignored [${row.error.code}]: ${row.error.message}`);
+            console.warn(`Line ${row.line} skipped [${row.error.code}]: ${row.error.message}`);
         }
     }
 
     await writer.close();
-    await savePromise;
 
-    console.log(`Finish : ${successCount} exported, ${failureCount} rejected.`);
+    console.log(`Done: ${successCount} exported, ${failureCount} rejected.`);
 }
 
 runInventoryPipeline();
 ```
 
-## File Export & Web
+## File & Web Export
 
-### Save to disk (Node.js)
+### Save to Disk (Node.js)
 ```ts
 import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
 
@@ -317,32 +337,26 @@ class ExportDto
     CsvColumn("ID", { order: 0 }) 
     id!: string;
 
-    @CsvColumn("Titre", { order: 1 }) 
+    @CsvColumn("Title", { order: 1 }) 
     title!: string;
 }
 
-const writer = Csv.streamWriterWithClass(ExportDto);
-
-// Uses file system streams
-const fileSave = Csv.saveToFile(writer, "./exports/report.csv"); 
+const writer = await Csv.createFileWriter("./exports/report.csv", ExportDto);
 
 await writer.write({ id: "1", title: "Stream processing" });
-await writer.write({ id: "2", title: '"Escaped" quotation marks' });
-await writer.close();
-
-// Wait for the file to be fully written.
-await fileSave; 
+await writer.write({ id: "2", title: 'Escaped "quotes"' });
+await writer.close(); // Automatically handles file saving!
 ```
 
-### Download HTTP (Next.js, Cloudflare, Express...)
-Instantly create an API response ready for the user to download.
+### HTTP Download (Next.js, Cloudflare, Express...)
+Instantly create an API Response ready to be downloaded by the user.
 
 ```ts
 import { Csv, CsvColumn } from "@jetonpeche/csv-airstream";
 
 class CustomerDto
 {
-    @CsvColumn("client_id") 
+    @CsvColumn("customer_id") 
     id!: string;
 
     @CsvColumn("full_name") 
@@ -353,22 +367,22 @@ export async function GET()
 {
     const writer = Csv.streamWriterWithClass(CustomerDto);
 
-    // Starts writing in the background
+    // Start writing in the background
     (async () => {
         await writer.write({ id: "101", name: "Alice Dupont" });
         await writer.write({ id: "102", name: "Bob Martin" });
         await writer.close();
     })();
 
-    // Returns a standard Web Response with the correct headers (Content-Disposition).
-    return Csv.toResponse(writer, "clients.csv");
+    // Returns a standard Web Response with the correct headers (Content-Disposition)
+    return Csv.toResponse(writer, "customers.csv");
 }
 ```
 
-## API References
+## API Reference
 
 ### Decorators
-`@CsvColumn(header, options?)`: Maps a property to a header text.
+`@CsvColumn(header, options?)`: Binds a property to a header text.
 
 | Parameter | Type | Description |
 |:--- |:--- |:--- |
@@ -395,19 +409,20 @@ export async function GET()
 `Csv.streamReaderWithClass(source, dtoClass, options?)`  
 Reads the CSV and transforms it into instances of your class.
 * Automatically enables headers (`hasHeader: true`).   
-* Automatically applies the required fields.
+* Automatically enforces required fields.
 
 `Csv.streamWriterWithClass(dtoClass, options?)`  
-Creates a writing stream configured by your class.
+Creates a write stream configured by your class.
 
-* `options.columnsOrder` *(array)* : Allows you to force a different order of columns at the time of export.
-* `options.alwaysQuote`*(boolean)* :Forces the addition of quotation marks around each cell.
+* `options.columnsOrder` *(array)* : Allows enforcing a different column order at export time.
+* `options.alwaysQuote`*(boolean)* :Forces adding quotes around every cell.
 
 ### Export Utilities
-* `Csv.saveToFile(writer, filePath)` : Saves your stream directly to disk (ideal for Node/Bun/Deno).
+* `Csv.createFileWriter(filePath, dtoClass?, options?)`: Creates a stream directly connected to a file (ideal for Node/Bun/Deno).
+* `Csv.writeFile(filePath, data, dtoClass?, options?)`: One-shot method to write an array to a file.
 * `Csv.toResponse(writer, filename)` : Converts the stream into a browser download (ideal for APIs).
 
-### Reading Options (CsvReaderOptions)
+### Reader Options (CsvReaderOptions)
 
 | Option | Type | Default | Description |
 |:--- |:--- |:--- |:--- |
@@ -420,7 +435,7 @@ Creates a writing stream configured by your class.
 | `comment` | `string` | `undefined` | Skips rows starting with this prefix (e.g., `"#"`). |
 | `targetClass` | `Class` | `undefined` | Instantiates each row using this class (requires a parameterless constructor). |
 
-### Writing Options (CsvWriterOptions)
+### Writer Options (CsvWriterOptions)
 
 | Option | Type | Default | Description |
 |:--- |:--- |:--- |:--- |
@@ -433,30 +448,32 @@ Creates a writing stream configured by your class.
 
 ## Benchmark & Performance
 
-`csv-airstream` is built to combine extreme speed with strict memory safety. The table below demonstrates the linear scalability of the parser across different file sizes (tested on Node.js):
+`csv-airstream` is designed to combine extreme speed with memory safety. The table below demonstrates the parser's linear scalability across different file sizes (tested on Node.js):
 
-| File Processed | Rows Parsed | Execution Time | Processing Speed | Max RAM Footprint |
+| Processed File | Rows Analyzed | Read Time (Parse) | Write Time (Str) | Max RAM Footprint |
 | :--- | :--- | :--- | :--- | :--- |
-| **92.73 MB** | **1,000,000** | **1.76 s** | **568,505 rows / sec** | **< 20 MB** |
-| **480.62 MB** | **5,000,000** | **8.20 s** | **610,128 rows / sec** | **< 40 MB** |
-| **965.48 MB** | **10,000,000**| **17.45 s**| **573,164 rows / sec** | **< 40 MB** |
+| :--- | :--- | :--- | :--- | :--- |
+| **92.73 Mo**| **1 000 000**| **1.1 s**| **2.6 s**| **~15 Mo**|
+| **480.62 Mo** | **5 000 000** | **4.8 s** | **12.7 s** | **~27 Mo** |
+| **965.48 Mo** | **10 000 000**| **9.7 s**| **26.7 s**| **~23 Mo**|
+| **4.8 Go** | **50 000 000**| **50.5 s**| **146.3 s**| **< 10 Mo**|
 
-![benchmark](./assets/benchmark.png)
+![benchmark](https://raw.githubusercontent.com/JetonpecheCorp/csv-airstream/main/benchmark.svg)
 
 > **How were these metrics measured?**
-> Execution times were recorded using `Date.now()`. RAM consumption was monitored by polling `process.memoryUsage().heapUsed` every 100 milliseconds while the native stream read the file.
+> Execution times were timed via `Date.now()`. RAM consumption was measured by polling `process.memoryUsage().heapUsed` every 100 milliseconds while the native stream read the file.
 
 **Test Conditions & Parsed Data:**
 This test is not a simple text stream read. The measured time includes all the following heavy operations processed on-the-fly for every row:
 * **I/O Reading** (`fs.createReadStream`).
 * **CSV Parsing:** Splitting 7 distinct columns per row.
-* **Structural validation:** Strict column count verification.
-* **DTO Mapping & Typing:** Instantiating `UserDto` class objects.
-* **Automatic casting:** Converting strings into native types (e.g., `"42.5"` -> `Number`, `"true"` -> `Boolean`).
+* **Structural validation:** Strict verification of the expected column count.
+* **DTO Mapping & Typing:** Instantiation of `UserDto` objects.
+* **Automatic casting:** Converting strings to native types (e.g., `"42.5"` -> `Number`, `"true"` -> `Boolean`).
 
 ### Benchmark Code
+Here is the exact code executed to obtain these results:
 
-Here is the exact code executed to achieve these results:
 ```ts
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -474,15 +491,15 @@ class UserDto {
 
 async function runBenchmark() 
 {
-    console.log("Launch of the load test...");
+    console.log("Starting load test...");
     
-    const stats = fs.statSync(FICHIER_CIBLE);
-    const tailleMo = (stats.size / 1024 / 1024).toFixed(2);
+    const stats = fs.statSync(TARGET_FILE);
+    const sizeMb = (stats.size / 1024 / 1024).toFixed(2);
     
     const memorySnapshots: any[] = [];
     let rowCount = 0;
     
-    // Memory measurement every 100ms
+    // Measure memory every 100ms
     const interval = setInterval(() => {
         const mem = process.memoryUsage();
         memorySnapshots.push({
@@ -493,7 +510,7 @@ async function runBenchmark()
 
     const startTime = Date.now();
     
-    const nodeStream = fs.createReadStream(FICHIER_CIBLE);
+    const nodeStream = fs.createReadStream(TARGET_FILE);
     const webStream = Readable.toWeb(nodeStream) as any;
     
     for await (const row of Csv.streamReaderWithClass(webStream, UserDto)) 
@@ -508,19 +525,19 @@ async function runBenchmark()
     const durationSec = ((endTime - startTime) / 1000).toFixed(2);
     const rowsPerSec = Math.round(rowCount / (endTime - startTime) * 1000);
     
-    console.log(`\n Benchmark done !`);
-    console.log(`Lines : ${rowCount.toLocaleString()}`);
-    console.log(`Total time : ${durationSec} secondes`);
-    console.log(`Speed : ${rowsPerSec.toLocaleString()} lines / seconde`);
+    console.log(`\n Benchmark finished!`);
+    console.log(`Processed rows: ${rowCount.toLocaleString()}`);
+    console.log(`Total time: ${durationSec} seconds`);
+    console.log(`Speed: ${rowsPerSec.toLocaleString()} rows / second`);
 }
 
 runBenchmark();
 ```
 
 **Memory Footprint Analysis:**  
-The chart above illustrates perfect streaming behavior. Even though the file size approaches one gigabyte, the memory footprint never spikes. The sawtooth pattern demonstrates that memory is temporarily allocated for object creation (consistently peaking under 40 MB), then immediately freed by the Node.js Garbage Collector.
+The graph above illustrates a perfect stream behavior. Although the file reaches up to gigabytes, the memory footprint never blows up. The "sawtooth" pattern shows that memory is temporarily allocated (a regular spike under 40 MB) to create objects, and then immediately freed by the Node.js Garbage Collector.
 
-**Conclusion**: Zero memory leaks and total protection against Out Of Memory crashes, regardless of the file size.
+**Result**: Zero memory leaks and total protection against Out Of Memory crashes, regardless of the file size.
 
 ## License
 MIT
